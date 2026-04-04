@@ -19,6 +19,8 @@
     "build": "rimraf ./dist && tsc",
     "watch": "npm run build && npm link && nodemon",
     "lint": "eslint src --ext .ts --max-warnings=0",
+    "dev:homebridge": "homebridge -D -I -U ./.homebridge-dev -P . --strict-plugin-resolution",
+    "dev:smoke": "npm run build && npm run dev:homebridge",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "dependencies": {

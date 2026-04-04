@@ -23,6 +23,9 @@ import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
 export class VehicleAccessory {
   private readonly Service: typeof Service;
   private status: VehicleStatus | null = null;
+  private commandQueue: Promise<void> = Promise.resolve();
+  private pendingLockTarget: boolean | null = null;
+  private pendingEngineTarget: boolean | null = null;
 
   // Service references
   private readonly lockService: Service;
@@ -65,22 +68,39 @@ export class VehicleAccessory {
       .getCharacteristic(Characteristic.LockTargetState)
       .onGet(() => this.getLockTargetState())
       .onSet(async (value) => {
-        log.info(`[${config.name}] Lock target → ${value === 1 ? 'LOCK' : 'UNLOCK'}`);
-        try {
-          if (value === 1) {
-            await client.lock();
-          } else {
-            await client.unlock();
-          }
-          await this.refresh();
-        } catch (err) {
-          log.error(`[${config.name}] Lock/unlock failed:`, err);
+        const shouldLock = value === 1;
+        if (this.pendingLockTarget === shouldLock) {
+          log.debug(`[${config.name}] Ignoring duplicate lock target write.`);
+          return;
         }
+        if (this.pendingLockTarget === null && this.status?.isLocked === shouldLock) {
+          log.debug(`[${config.name}] Lock target already matches current state.`);
+          return;
+        }
+
+        this.pendingLockTarget = shouldLock;
+        await this.enqueueCommand(async () => {
+          log.info(`[${config.name}] Lock target → ${shouldLock ? 'LOCK' : 'UNLOCK'}`);
+          try {
+            if (shouldLock) {
+              await client.lock();
+            } else {
+              await client.unlock();
+            }
+            await this.refresh();
+          } catch (err) {
+            log.error(`[${config.name}] Lock/unlock failed:`, err);
+          } finally {
+            if (this.pendingLockTarget === shouldLock) {
+              this.pendingLockTarget = null;
+            }
+          }
+        });
       });
 
     // ── Engine switch (tracks real engine state) ──────────────────────────
     this.engineService =
-      accessory.getService(`engine:${config.vin}`) ??
+      accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`) ??
       accessory.addService(this.Service.Switch, 'Engine', `${config.vin}:engine`);
     this.engineService.setCharacteristic(Characteristic.Name, 'Engine');
 
@@ -88,30 +108,47 @@ export class VehicleAccessory {
       .getCharacteristic(Characteristic.On)
       .onGet(() => this.status?.isEngineOn ?? false)
       .onSet(async (value: CharacteristicValue) => {
-        log.info(`[${config.name}] Engine → ${value ? 'START' : 'STOP'}`);
-        try {
-          if (value) {
-            const defaultProfile = config.climateProfiles[0] ?? bareStartProfile();
-            await client.startClimate(defaultProfile);
-          } else {
-            await client.stopClimate();
-          }
-          await this.refresh();
-        } catch (err) {
-          log.error(`[${config.name}] Engine start/stop failed:`, err);
-          // Revert the switch to the actual state so HomeKit isn't out of sync.
-          this.engineService.updateCharacteristic(
-            Characteristic.On,
-            this.status?.isEngineOn ?? false,
-          );
+        const shouldStart = value === true || value === 1;
+        if (this.pendingEngineTarget === shouldStart) {
+          log.debug(`[${config.name}] Ignoring duplicate engine target write.`);
+          return;
         }
+        if (this.pendingEngineTarget === null && this.status?.isEngineOn === shouldStart) {
+          log.debug(`[${config.name}] Engine target already matches current state.`);
+          return;
+        }
+
+        this.pendingEngineTarget = shouldStart;
+        await this.enqueueCommand(async () => {
+          log.info(`[${config.name}] Engine → ${shouldStart ? 'START' : 'STOP'}`);
+          try {
+            if (shouldStart) {
+              const defaultProfile = config.climateProfiles[0] ?? bareStartProfile();
+              await client.startClimate(defaultProfile);
+            } else {
+              await client.stopClimate();
+            }
+            await this.refresh();
+          } catch (err) {
+            log.error(`[${config.name}] Engine start/stop failed:`, err);
+            // Revert the switch to the actual state so HomeKit isn't out of sync.
+            this.engineService.updateCharacteristic(
+              Characteristic.On,
+              this.status?.isEngineOn ?? false,
+            );
+          } finally {
+            if (this.pendingEngineTarget === shouldStart) {
+              this.pendingEngineTarget = null;
+            }
+          }
+        });
       });
 
     // ── Climate profile switches (momentary triggers) ─────────────────────
     for (const profile of config.climateProfiles) {
       const subtype = `profile:${config.vin}:${profile.name}`;
       const svc =
-        accessory.getService(subtype) ??
+        accessory.getServiceById(this.Service.Switch, subtype) ??
         accessory.addService(this.Service.Switch, profile.name, subtype);
       svc.setCharacteristic(Characteristic.Name, profile.name);
 
@@ -120,20 +157,22 @@ export class VehicleAccessory {
         .onGet(() => false) // always reports off; it's a trigger
         .onSet(async (value: CharacteristicValue) => {
           if (!value) return; // ignore the auto-reset write
-          log.info(`[${config.name}] Climate profile "${profile.name}" triggered`);
+          await this.enqueueCommand(async () => {
+            log.info(`[${config.name}] Climate profile "${profile.name}" triggered`);
 
-          // Auto-reset the switch to OFF after a short delay so it
-          // behaves as a momentary button rather than a persistent toggle.
-          setTimeout(() => {
-            svc.updateCharacteristic(Characteristic.On, false);
-          }, 1_500);
+            // Auto-reset the switch to OFF after a short delay so it
+            // behaves as a momentary button rather than a persistent toggle.
+            setTimeout(() => {
+              svc.updateCharacteristic(Characteristic.On, false);
+            }, 1_500);
 
-          try {
-            await client.startClimate(profile);
-            await this.refresh();
-          } catch (err) {
-            log.error(`[${config.name}] Climate profile "${profile.name}" failed:`, err);
-          }
+            try {
+              await client.startClimate(profile);
+              await this.refresh();
+            } catch (err) {
+              log.error(`[${config.name}] Climate profile "${profile.name}" failed:`, err);
+            }
+          });
         });
 
       this.profileServices.set(profile.name, svc);
@@ -141,7 +180,7 @@ export class VehicleAccessory {
 
     // ── Battery / fuel ────────────────────────────────────────────────────
     this.batteryService =
-      accessory.getService(`battery:${config.vin}`) ??
+      accessory.getServiceById(this.Service.Battery, `${config.vin}:battery`) ??
       accessory.addService(this.Service.Battery, 'Fuel Level', `${config.vin}:battery`);
     this.batteryService.setCharacteristic(Characteristic.Name, 'Fuel Level');
 
@@ -174,7 +213,7 @@ export class VehicleAccessory {
       for (const { key, label } of doorDefs) {
         const subtype = `door:${config.vin}:${key}`;
         const svc =
-          accessory.getService(subtype) ??
+          accessory.getServiceById(this.Service.ContactSensor, subtype) ??
           accessory.addService(this.Service.ContactSensor, label, subtype);
         svc.setCharacteristic(Characteristic.Name, label);
         svc
@@ -205,6 +244,19 @@ export class VehicleAccessory {
     } catch (err) {
       this.platform.log.error(`[${this.config.name}] Status refresh failed:`, err);
     }
+  }
+
+  /**
+   * Serializes remote command execution for a vehicle so Kia only sees one
+   * in-flight command at a time.
+   */
+  private enqueueCommand(task: () => Promise<void>): Promise<void> {
+    const run = async (): Promise<void> => {
+      await task();
+    };
+    const queued = this.commandQueue.then(run, run);
+    this.commandQueue = queued.catch(() => undefined);
+    return queued;
   }
 
   /** Push latest status to all characteristics so HomeKit reflects reality. */

@@ -1,4 +1,6 @@
 import axios, { AxiosInstance, AxiosResponse } from 'axios';
+import * as https from 'https';
+import * as crypto from 'crypto';
 import { backOff } from 'exponential-backoff';
 import { Logger } from 'homebridge';
 import { AuthManager } from './auth';
@@ -26,6 +28,7 @@ import { KIA_API_BASE, KIA_API_HOST } from '../settings';
  */
 export class KiaClient {
   private readonly http: AxiosInstance;
+  private readonly httpsAgent: https.Agent;
 
   /** Cached (vehicleKey) resolved for the configured VIN, keyed by accessToken. */
   private cachedVehicleKey: string | null = null;
@@ -36,7 +39,12 @@ export class KiaClient {
     private readonly auth: AuthManager,
     private readonly log: Logger,
   ) {
-    this.http = axios.create();
+    // Prefer IPv4 for Kia endpoints. Some networks get Cloudflare-blocked on IPv6.
+    this.httpsAgent = new https.Agent({ keepAlive: true, family: 4 });
+    this.http = axios.create({
+      httpsAgent: this.httpsAgent,
+      timeout: 20_000,
+    });
   }
 
   // ─── Public: vehicle status ───────────────────────────────────────────────
@@ -83,10 +91,9 @@ export class KiaClient {
   private async withSession<T>(
     fn: (token: StoredToken, vehicleKey: string) => Promise<T>,
   ): Promise<T> {
-    const token = await this.auth.getValidSession();
-    const vehicleKey = await this.resolveVehicleKey(token);
-
     try {
+      const token = await this.auth.getValidSession();
+      const vehicleKey = await this.resolveVehicleKey(token);
       return await fn(token, vehicleKey);
     } catch (err) {
       if (this.isSessionError(err)) {
@@ -95,6 +102,13 @@ export class KiaClient {
         const newToken = await this.auth.getValidSession();
         const newKey = await this.resolveVehicleKey(newToken);
         return fn(newToken, newKey);
+      }
+      if (this.isRemoteBusyError(err)) {
+        this.log.debug('[Kia] Vehicle reports another remote command in progress — retrying once…');
+        await new Promise<void>((resolve) => setTimeout(resolve, 4_000));
+        const retryToken = await this.auth.getValidSession();
+        const retryKey = await this.resolveVehicleKey(retryToken);
+        return fn(retryToken, retryKey);
       }
       throw err;
     }
@@ -142,12 +156,66 @@ export class KiaClient {
     vehicleKey: string,
     extra: Record<string, string> = {},
   ): Record<string, string> {
+    const offsetHours = String(Math.round(-new Date().getTimezoneOffset() / 60));
+    const clientUuid = this.uuidV5(KIA_API_HOST, token.deviceId);
+
     return {
       'sid': token.accessToken,
       'vinkey': vehicleKey,
       'content-type': 'application/json;charset=utf-8',
       'accept': 'application/json',
+      'accept-encoding': 'gzip, deflate, br',
+      'accept-language': 'en-US,en;q=0.9',
+      'accept-charset': 'utf-8',
+      'apptype': 'L',
+      'appversion': '7.22.0',
+      'clientid': 'SPACL716-APL',
+      'from': 'SPA',
       'host': KIA_API_HOST,
+      'language': '0',
+      'ostype': 'iOS',
+      'osversion': '15.8.5',
+      'phonebrand': 'iPhone',
+      'secretkey': 'sydnat-9kykci-Kuhtep-h5nK',
+      'to': 'APIGW',
+      'tokentype': 'A',
+      'user-agent': 'KIAPrimo_iOS/37 CFNetwork/1335.0.3.4 Darwin/21.6.0',
+      'date': new Date().toUTCString(),
+      'offset': offsetHours,
+      'deviceid': token.deviceId,
+      'clientuuid': clientUuid,
+      ...extra,
+    };
+  }
+
+  private sessionHeaders(token: StoredToken, extra: Record<string, string> = {}): Record<string, string> {
+    const offsetHours = String(Math.round(-new Date().getTimezoneOffset() / 60));
+    const clientUuid = this.uuidV5(KIA_API_HOST, token.deviceId);
+
+    return {
+      'sid': token.accessToken,
+      'content-type': 'application/json;charset=utf-8',
+      'accept': 'application/json',
+      'accept-encoding': 'gzip, deflate, br',
+      'accept-language': 'en-US,en;q=0.9',
+      'accept-charset': 'utf-8',
+      'apptype': 'L',
+      'appversion': '7.22.0',
+      'clientid': 'SPACL716-APL',
+      'from': 'SPA',
+      'host': KIA_API_HOST,
+      'language': '0',
+      'ostype': 'iOS',
+      'osversion': '15.8.5',
+      'phonebrand': 'iPhone',
+      'secretkey': 'sydnat-9kykci-Kuhtep-h5nK',
+      'to': 'APIGW',
+      'tokentype': 'A',
+      'user-agent': 'KIAPrimo_iOS/37 CFNetwork/1335.0.3.4 Darwin/21.6.0',
+      'date': new Date().toUTCString(),
+      'offset': offsetHours,
+      'deviceid': token.deviceId,
+      'clientuuid': clientUuid,
       ...extra,
     };
   }
@@ -156,7 +224,7 @@ export class KiaClient {
     const res = await this.http.get<{
       payload: { vehicleSummary: GvlVehicleSummary[] };
     }>(`${KIA_API_BASE}ownr/gvl`, {
-      headers: { 'sid': token.accessToken, 'host': KIA_API_HOST },
+      headers: this.sessionHeaders(token),
     });
     this.assertOk(res);
     return (res.data.payload.vehicleSummary ?? []).map((s) => ({
@@ -284,10 +352,16 @@ export class KiaClient {
           { headers: this.authedHeaders(token, vehicleKey) },
         );
 
-        const payload = res.data?.payload as Record<string, number> | undefined;
-        const done = payload
-          ? Object.values(payload).every((v) => v === 0)
-          : false;
+        this.assertOk(res);
+
+        const payloadRaw = res.data?.payload;
+        if (!payloadRaw || typeof payloadRaw !== 'object' || Array.isArray(payloadRaw)) {
+          this.log.debug('[Kia] Transaction complete:', xid);
+          return;
+        }
+
+        const payload = payloadRaw as Record<string, number>;
+        const done = Object.keys(payload).length === 0 || Object.values(payload).every((v) => v === 0);
 
         if (!done) {
           this.log.debug('[Kia] Transaction still pending:', xid, payload);
@@ -321,15 +395,40 @@ export class KiaClient {
       throw err;
     }
 
+    if (status.statusCode === 1 && status.errorType === 1 && status.errorCode === 1125) {
+      const err = new Error(`[Kia] Remote command busy (${status.errorCode}): ${status.errorMessage}`);
+      (err as NodeJS.ErrnoException).code = 'KIA_REMOTE_BUSY';
+      throw err;
+    }
+
     throw new Error(
       `[Kia] API error ${status.errorCode}: ${status.errorMessage ?? JSON.stringify(status)}`,
     );
   }
 
   private isSessionError(err: unknown): boolean {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      const body = typeof err.response?.data === 'string' ? err.response.data : '';
+      if (status === 403 && body.includes('Cloudflare')) {
+        throw new Error(
+          '[Kia] Cloudflare blocked the request after authentication. ' +
+          'This is usually network-related (IPv6 path, VPN, DNS/proxy filtering). ' +
+          'Try disabling VPN/proxy and forcing IPv4 egress from this host.',
+        );
+      }
+    }
+
     return (
       err instanceof Error &&
       (err as NodeJS.ErrnoException).code === 'KIA_SESSION_INVALID'
+    );
+  }
+
+  private isRemoteBusyError(err: unknown): boolean {
+    return (
+      err instanceof Error &&
+      (err as NodeJS.ErrnoException).code === 'KIA_REMOTE_BUSY'
     );
   }
 
@@ -363,6 +462,28 @@ export class KiaClient {
       },
       lastUpdatedAt,
     };
+  }
+
+  /** UUID v5 (SHA-1, DNS namespace) to match Kia app header format. */
+  private uuidV5(namespace: string, name: string): string {
+    const nsBytes = Buffer.from('6ba7b8109dad11d180b400c04fd430c8', 'hex');
+    const nameBytes = Buffer.from(name, 'utf8');
+    const hash = crypto
+      .createHash('sha1')
+      .update(Buffer.concat([nsBytes, nameBytes]))
+      .digest();
+
+    hash[6] = (hash[6] & 0x0f) | 0x50;
+    hash[8] = (hash[8] & 0x3f) | 0x80;
+
+    const hex = hash.subarray(0, 16).toString('hex');
+    return (
+      `${hex.slice(0, 8)}-` +
+      `${hex.slice(8, 12)}-` +
+      `${hex.slice(12, 16)}-` +
+      `${hex.slice(16, 20)}-` +
+      `${hex.slice(20, 32)}`
+    ).toUpperCase();
   }
 }
 

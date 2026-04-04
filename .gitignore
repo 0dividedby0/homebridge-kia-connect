@@ -24,3 +24,7 @@ pnpm-debug.log*
 
 # Coverage
 coverage/
+
+# Local Homebridge dev runtime
+.homebridge-dev/*
+!.homebridge-dev/config.json

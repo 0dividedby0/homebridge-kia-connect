@@ -273,6 +273,43 @@ sudo hb-service restart
 
 Tip: Replace the tarball filename with the version you generated.
 
+## Local Smoke Test (SSH Workspace)
+
+For this repository, a local Homebridge test config is included at `.homebridge-dev/config.json`.
+
+1) Edit credentials and vehicle values:
+
+- `email`
+- `password`
+- `vehicles[0].vin`
+
+2) Build and run Homebridge against this plugin source path:
+
+```bash
+npm run dev:smoke
+```
+
+This command:
+
+- compiles TypeScript to `dist/`
+- starts Homebridge in debug + insecure mode
+- uses `.homebridge-dev` as user storage
+- loads plugins only from this repository path
+
+3) Verify in output:
+
+- plugin registration (`KiaConnect`)
+- accessory registration/restoration
+- OTP server start when fresh login is needed
+
+4) Submit OTP from another device on your network:
+
+```bash
+http://<pi-ip>:38581/kia-otp
+```
+
+5) Stop the smoke test with Ctrl+C.
+
 ## Troubleshooting
 
 - Missing credentials:
@@ -290,6 +327,8 @@ Tip: Replace the tarball filename with the version you generated.
 npm run build      # compile TypeScript to dist/
 npm run lint       # run ESLint
 npm run watch      # build + link + nodemon for development
+npm run dev:homebridge  # run local Homebridge against this repo
+npm run dev:smoke       # build + run local Homebridge smoke test
 ```
 
 ## License
