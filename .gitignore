@@ -26,5 +26,10 @@ pnpm-debug.log*
 coverage/
 
 # Local Homebridge dev runtime
-.homebridge-dev/*
-!.homebridge-dev/config.json
+.homebridge-dev/
+
+# npm pack output
+*.tgz
+
+# Token/auth files
+kia-token.json

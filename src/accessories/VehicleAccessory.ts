@@ -29,7 +29,7 @@ export class VehicleAccessory {
 
   // Service references
   private readonly lockService: Service;
-  private readonly engineService: Service;
+  private readonly engineService: Service | null;
   private readonly profileServices: Map<string, Service> = new Map();
   private readonly batteryService: Service;
   private readonly doorServices: Map<string, Service> = new Map();
@@ -56,9 +56,10 @@ export class VehicleAccessory {
 
     // ── Lock mechanism ────────────────────────────────────────────────────
     this.lockService =
+      accessory.getServiceById(this.Service.LockMechanism, `${config.vin}:lock`) ??
       accessory.getService(this.Service.LockMechanism) ??
-      accessory.addService(this.Service.LockMechanism, 'Door Locks', `${config.vin}:lock`);
-    this.lockService.setCharacteristic(Characteristic.Name, 'Door Locks');
+      accessory.addService(this.Service.LockMechanism, 'Doors', `${config.vin}:lock`);
+    setServiceName(this.lockService, Characteristic, 'Doors');
 
     this.lockService
       .getCharacteristic(Characteristic.LockCurrentState)
@@ -99,50 +100,57 @@ export class VehicleAccessory {
       });
 
     // ── Engine switch (tracks real engine state) ──────────────────────────
-    this.engineService =
-      accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`) ??
-      accessory.addService(this.Service.Switch, 'Engine', `${config.vin}:engine`);
-    this.engineService.setCharacteristic(Characteristic.Name, 'Engine');
+    if (config.climateProfiles.length === 0) {
+      this.engineService =
+        accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`) ??
+        accessory.addService(this.Service.Switch, 'Engine', `${config.vin}:engine`);
+      setServiceName(this.engineService, Characteristic, 'Engine');
 
-    this.engineService
-      .getCharacteristic(Characteristic.On)
-      .onGet(() => this.status?.isEngineOn ?? false)
-      .onSet(async (value: CharacteristicValue) => {
-        const shouldStart = value === true || value === 1;
-        if (this.pendingEngineTarget === shouldStart) {
-          log.debug(`[${config.name}] Ignoring duplicate engine target write.`);
-          return;
-        }
-        if (this.pendingEngineTarget === null && this.status?.isEngineOn === shouldStart) {
-          log.debug(`[${config.name}] Engine target already matches current state.`);
-          return;
-        }
-
-        this.pendingEngineTarget = shouldStart;
-        await this.enqueueCommand(async () => {
-          log.info(`[${config.name}] Engine → ${shouldStart ? 'START' : 'STOP'}`);
-          try {
-            if (shouldStart) {
-              const defaultProfile = config.climateProfiles[0] ?? bareStartProfile();
-              await client.startClimate(defaultProfile);
-            } else {
-              await client.stopClimate();
-            }
-            await this.refresh();
-          } catch (err) {
-            log.error(`[${config.name}] Engine start/stop failed:`, err);
-            // Revert the switch to the actual state so HomeKit isn't out of sync.
-            this.engineService.updateCharacteristic(
-              Characteristic.On,
-              this.status?.isEngineOn ?? false,
-            );
-          } finally {
-            if (this.pendingEngineTarget === shouldStart) {
-              this.pendingEngineTarget = null;
-            }
+      this.engineService
+        .getCharacteristic(Characteristic.On)
+        .onGet(() => this.status?.isEngineOn ?? false)
+        .onSet(async (value: CharacteristicValue) => {
+          const shouldStart = value === true || value === 1;
+          if (this.pendingEngineTarget === shouldStart) {
+            log.debug(`[${config.name}] Ignoring duplicate engine target write.`);
+            return;
           }
+          if (this.pendingEngineTarget === null && this.status?.isEngineOn === shouldStart) {
+            log.debug(`[${config.name}] Engine target already matches current state.`);
+            return;
+          }
+
+          this.pendingEngineTarget = shouldStart;
+          await this.enqueueCommand(async () => {
+            log.info(`[${config.name}] Engine → ${shouldStart ? 'START' : 'STOP'}`);
+            try {
+              if (shouldStart) {
+                await client.startClimate(bareStartProfile());
+              } else {
+                await client.stopClimate();
+              }
+              await this.refresh();
+            } catch (err) {
+              log.error(`[${config.name}] Engine start/stop failed:`, err);
+              // Revert the switch to the actual state so HomeKit isn't out of sync.
+              this.engineService?.updateCharacteristic(
+                Characteristic.On,
+                this.status?.isEngineOn ?? false,
+              );
+            } finally {
+              if (this.pendingEngineTarget === shouldStart) {
+                this.pendingEngineTarget = null;
+              }
+            }
+          });
         });
-      });
+    } else {
+      this.engineService = null;
+      const staleEngineService = accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`);
+      if (staleEngineService) {
+        accessory.removeService(staleEngineService);
+      }
+    }
 
     // ── Climate profile switches (momentary triggers) ─────────────────────
     for (const profile of config.climateProfiles) {
@@ -150,7 +158,7 @@ export class VehicleAccessory {
       const svc =
         accessory.getServiceById(this.Service.Switch, subtype) ??
         accessory.addService(this.Service.Switch, profile.name, subtype);
-      svc.setCharacteristic(Characteristic.Name, profile.name);
+      setServiceName(svc, Characteristic, profile.name);
 
       svc
         .getCharacteristic(Characteristic.On)
@@ -182,7 +190,7 @@ export class VehicleAccessory {
     this.batteryService =
       accessory.getServiceById(this.Service.Battery, `${config.vin}:battery`) ??
       accessory.addService(this.Service.Battery, 'Fuel Level', `${config.vin}:battery`);
-    this.batteryService.setCharacteristic(Characteristic.Name, 'Fuel Level');
+    setServiceName(this.batteryService, Characteristic, 'Fuel Level');
 
     this.batteryService
       .getCharacteristic(Characteristic.BatteryLevel)
@@ -215,7 +223,7 @@ export class VehicleAccessory {
         const svc =
           accessory.getServiceById(this.Service.ContactSensor, subtype) ??
           accessory.addService(this.Service.ContactSensor, label, subtype);
-        svc.setCharacteristic(Characteristic.Name, label);
+        setServiceName(svc, Characteristic, label);
         svc
           .getCharacteristic(Characteristic.ContactSensorState)
           .onGet(() =>
@@ -275,7 +283,7 @@ export class VehicleAccessory {
     );
 
     // Engine
-    this.engineService.updateCharacteristic(Characteristic.On, this.status.isEngineOn);
+    this.engineService?.updateCharacteristic(Characteristic.On, this.status.isEngineOn);
 
     // Battery
     this.batteryService.updateCharacteristic(
@@ -349,4 +357,15 @@ function bareStartProfile(): ClimateProfile {
     rearLeftSeat: 'off',
     rearRightSeat: 'off',
   };
+}
+
+function setServiceName(
+  service: Service,
+  characteristic: KiaConnectPlatform['api']['hap']['Characteristic'],
+  name: string,
+): void {
+  service.setCharacteristic(characteristic.Name, name);
+  if ('ConfiguredName' in characteristic) {
+    service.setCharacteristic(characteristic.ConfiguredName, name);
+  }
 }

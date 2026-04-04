@@ -310,6 +310,99 @@ http://<pi-ip>:38581/kia-otp
 
 5) Stop the smoke test with Ctrl+C.
 
+## Build And Install
+
+### Build a distributable package
+
+From the project directory:
+
+```bash
+npm run build
+npm pack
+```
+
+This creates a tarball like:
+
+```bash
+homebridge-kia-connect-k5-1.0.0.tgz
+```
+
+### Install the built package on Homebridge
+
+If you are installing on the same Homebridge Pi where you built the package:
+
+```bash
+cd /home/pi/homebridge-kia-connect
+sudo npm install -g --unsafe-perm ./homebridge-kia-connect-k5-1.0.0.tgz
+sudo hb-service restart
+```
+
+If you built elsewhere, copy the tarball to the Homebridge machine and install it there:
+
+```bash
+scp homebridge-kia-connect-k5-1.0.0.tgz homebridge@homebridge.local:/tmp/
+ssh homebridge@homebridge.local
+sudo npm install -g --unsafe-perm /tmp/homebridge-kia-connect-k5-1.0.0.tgz
+sudo hb-service restart
+```
+
+After installation:
+
+- open the Homebridge UI
+- confirm the `KiaConnect` platform is installed
+- add or update the platform config
+- restart Homebridge if required
+- complete OTP if prompted
+
+## Install From Source
+
+If you want Homebridge to run directly from your working tree while you edit code:
+
+```bash
+cd /home/pi/homebridge-kia-connect
+sudo npm link
+cd /var/lib/homebridge
+sudo npm link homebridge-kia-connect-k5
+sudo hb-service restart
+```
+
+This is the fastest loop for active development on the Pi.
+
+## Publish To npm
+
+The package is set up to publish only the runtime files needed by Homebridge.
+
+### Validate before publishing
+
+```bash
+npm run build
+npm publish --dry-run
+```
+
+### Publish
+
+```bash
+npm login
+npm publish
+```
+
+If you need a new version first:
+
+```bash
+npm version patch
+npm publish
+```
+
+Use `patch`, `minor`, or `major` depending on the release.
+
+### Release checklist
+
+- run `npm run lint`
+- run `npm run build`
+- run `npm run dev:smoke` for a quick local verification
+- run `npm publish --dry-run`
+- publish with `npm publish`
+
 ## Troubleshooting
 
 - Missing credentials:
