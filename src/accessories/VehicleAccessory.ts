@@ -9,13 +9,12 @@ import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
  * Exposes the following HomeKit services per configured vehicle:
  *
  *  • LockMechanism  — lock / unlock
- *  • Switch "Engine" — shows live engine state; turning it on starts the
- *                      first climate profile (or a bare start if none are
- *                      configured); turning it off stops the engine.
- *  • Switch per climate profile (momentary) — triggers a remote start with
- *                      those specific settings; auto-resets to OFF so it
- *                      always acts as a one-shot command rather than
- *                      tracking state.
+ *  • Switch "Engine" — (only when NO climate profiles configured) bare
+ *                      engine start/stop.
+ *  • Switch per climate profile — triggers a remote start with those
+ *                      settings; stays ON while the engine is running from
+ *                      that profile.  Turning it OFF stops the engine.
+ *                      Switching to a different profile starts it fresh.
  *  • Battery        — fuel level + low-fuel warning
  *  • ContactSensor × 6 — individual door, hood, trunk sensors
  *                       (only when showDoorSensors = true)
@@ -26,6 +25,10 @@ export class VehicleAccessory {
   private commandQueue: Promise<void> = Promise.resolve();
   private pendingLockTarget: boolean | null = null;
   private pendingEngineTarget: boolean | null = null;
+  /** Name of the profile whose switch is currently showing ON (engine running or starting). */
+  private activeProfileName: string | null = null;
+  /** True while a climate START command is in-flight (prevents pushUpdates from clearing activeProfileName). */
+  private climateCommandInFlight = false;
 
   // Service references
   private readonly lockService: Service;
@@ -80,7 +83,8 @@ export class VehicleAccessory {
         }
 
         this.pendingLockTarget = shouldLock;
-        await this.enqueueCommand(async () => {
+        // Fire-and-forget: respond to HomeKit immediately so it doesn't time out.
+        this.enqueueCommand(async () => {
           log.info(`[${config.name}] Lock target → ${shouldLock ? 'LOCK' : 'UNLOCK'}`);
           try {
             if (shouldLock) {
@@ -99,7 +103,7 @@ export class VehicleAccessory {
         });
       });
 
-    // ── Engine switch (tracks real engine state) ──────────────────────────
+    // ── Engine switch (bare start — only when no profiles are configured) ──
     if (config.climateProfiles.length === 0) {
       this.engineService =
         accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`) ??
@@ -108,7 +112,7 @@ export class VehicleAccessory {
 
       this.engineService
         .getCharacteristic(Characteristic.On)
-        .onGet(() => this.status?.isEngineOn ?? false)
+        .onGet(() => this.pendingEngineTarget ?? this.status?.isEngineOn ?? false)
         .onSet(async (value: CharacteristicValue) => {
           const shouldStart = value === true || value === 1;
           if (this.pendingEngineTarget === shouldStart) {
@@ -121,7 +125,8 @@ export class VehicleAccessory {
           }
 
           this.pendingEngineTarget = shouldStart;
-          await this.enqueueCommand(async () => {
+          // Fire-and-forget: respond to HomeKit immediately so it doesn't time out.
+          this.enqueueCommand(async () => {
             log.info(`[${config.name}] Engine → ${shouldStart ? 'START' : 'STOP'}`);
             try {
               if (shouldStart) {
@@ -132,7 +137,6 @@ export class VehicleAccessory {
               await this.refresh();
             } catch (err) {
               log.error(`[${config.name}] Engine start/stop failed:`, err);
-              // Revert the switch to the actual state so HomeKit isn't out of sync.
               this.engineService?.updateCharacteristic(
                 Characteristic.On,
                 this.status?.isEngineOn ?? false,
@@ -145,14 +149,16 @@ export class VehicleAccessory {
           });
         });
     } else {
+      // Remove stale engine service if user later adds profiles.
       this.engineService = null;
-      const staleEngineService = accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`);
-      if (staleEngineService) {
-        accessory.removeService(staleEngineService);
-      }
+      const stale = accessory.getServiceById(this.Service.Switch, `${config.vin}:engine`);
+      if (stale) accessory.removeService(stale);
     }
 
-    // ── Climate profile switches (momentary triggers) ─────────────────────
+    // ── Climate profile switches ──────────────────────────────────────────
+    // Each switch stays ON while the engine is running under that profile.
+    // Turning a switch ON starts the engine; turning it OFF stops it.
+    // Switching to a different profile while one is running replaces it.
     for (const profile of config.climateProfiles) {
       const subtype = `profile:${config.vin}:${profile.name}`;
       const svc =
@@ -162,25 +168,66 @@ export class VehicleAccessory {
 
       svc
         .getCharacteristic(Characteristic.On)
-        .onGet(() => false) // always reports off; it's a trigger
+        // Reports ON whenever this profile is the active/starting one — regardless
+        // of whether the engine has confirmed on yet.  Keeping HAP's cache in sync
+        // with activeProfileName prevents updateCharacteristic(true) in pushUpdates
+        // from appearing as a change and triggering a spurious SET from controllers.
+        .onGet(() => this.activeProfileName === profile.name)
         .onSet(async (value: CharacteristicValue) => {
-          if (!value) return; // ignore the auto-reset write
-          await this.enqueueCommand(async () => {
-            log.info(`[${config.name}] Climate profile "${profile.name}" triggered`);
+          const shouldStart = value === true || value === 1;
 
-            // Auto-reset the switch to OFF after a short delay so it
-            // behaves as a momentary button rather than a persistent toggle.
-            setTimeout(() => {
-              svc.updateCharacteristic(Characteristic.On, false);
-            }, 1_500);
-
-            try {
-              await client.startClimate(profile);
-              await this.refresh();
-            } catch (err) {
-              log.error(`[${config.name}] Climate profile "${profile.name}" failed:`, err);
+          if (shouldStart) {
+            // Already the active/starting profile — drop duplicate SETs (HomeKit
+            // often sends more than one from phone + hub at the same time).
+            if (this.activeProfileName === profile.name) {
+              log.debug(`[${config.name}] Profile "${profile.name}" already active or starting, ignoring.`);
+              return;
             }
-          });
+            // Switch any previously-active profile switch to OFF.
+            if (this.activeProfileName !== null && this.activeProfileName !== profile.name) {
+              const prev = this.profileServices.get(this.activeProfileName);
+              prev?.updateCharacteristic(Characteristic.On, false);
+            }
+            this.activeProfileName = profile.name;
+            this.climateCommandInFlight = true;
+            // Fire-and-forget: respond to HomeKit immediately.
+            this.enqueueCommand(async () => {
+              log.info(`[${config.name}] Climate profile "${profile.name}" triggered`);
+              try {
+                await client.startClimate(profile);
+                await this.refresh();
+              } catch (err) {
+                log.error(`[${config.name}] Climate profile "${profile.name}" failed:`, err);
+                // Revert switch to off on failure.
+                if (this.activeProfileName === profile.name) this.activeProfileName = null;
+                svc.updateCharacteristic(Characteristic.On, false);
+              } finally {
+                this.climateCommandInFlight = false;
+              }
+            });
+          } else {
+            // Turning OFF: only stop the engine if this is the active profile.
+            if (this.activeProfileName !== profile.name) {
+              log.debug(`[${config.name}] Profile "${profile.name}" is not active, ignoring OFF.`);
+              return;
+            }
+            this.activeProfileName = null;
+            // Fire-and-forget: respond to HomeKit immediately.
+            this.enqueueCommand(async () => {
+              log.info(`[${config.name}] Engine stop (profile "${profile.name}" off)`);
+              try {
+                await client.stopClimate();
+                await this.refresh();
+              } catch (err) {
+                log.error(`[${config.name}] Engine stop failed:`, err);
+                // Revert: engine might still be on — push real state.
+                svc.updateCharacteristic(
+                  Characteristic.On,
+                  this.status?.isEngineOn ?? false,
+                );
+              }
+            });
+          }
         });
 
       this.profileServices.set(profile.name, svc);
@@ -282,8 +329,33 @@ export class VehicleAccessory {
       this.getLockTargetState(),
     );
 
-    // Engine
+    // Engine switch (bare-start mode — only present when no profiles configured)
     this.engineService?.updateCharacteristic(Characteristic.On, this.status.isEngineOn);
+
+    // Profile switches — sync ON/OFF to real engine state.
+    if (this.profileServices.size > 0) {
+      if (!this.status.isEngineOn) {
+        // Only clear activeProfileName when no start command is in-flight.
+        // If the engine hasn't confirmed on yet we don't want to drop the
+        // active profile (and allow duplicate starts) just because the status
+        // momentarily shows engine-off while the command is still running.
+        if (!this.climateCommandInFlight) {
+          this.activeProfileName = null;
+        }
+        for (const [name, svc] of this.profileServices) {
+          // Keep the in-flight profile switch ON so Home shows it as starting.
+          if (name !== this.activeProfileName) {
+            svc.updateCharacteristic(Characteristic.On, false);
+          }
+        }
+      } else if (this.activeProfileName !== null) {
+        // Engine is on: ensure the active profile switch shows ON.
+        // If onGet already returns true (activeProfileName matches), this is a
+        // no-op in HAP — no change notification, no spurious SET from controllers.
+        const activeSvc = this.profileServices.get(this.activeProfileName);
+        activeSvc?.updateCharacteristic(Characteristic.On, true);
+      }
+    }
 
     // Battery
     this.batteryService.updateCharacteristic(
@@ -333,6 +405,11 @@ export class VehicleAccessory {
 
   private getLockTargetState(): CharacteristicValue {
     const { Characteristic } = this.platform.api.hap;
+    if (this.pendingLockTarget !== null) {
+      return this.pendingLockTarget
+        ? Characteristic.LockTargetState.SECURED
+        : Characteristic.LockTargetState.UNSECURED;
+    }
     if (!this.status) return Characteristic.LockTargetState.SECURED;
     return this.status.isLocked
       ? Characteristic.LockTargetState.SECURED

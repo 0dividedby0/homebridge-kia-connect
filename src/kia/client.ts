@@ -298,8 +298,10 @@ export class KiaClient {
         airTemp: { unit: 1, value: temp },
         airCtrl: true,
         defrost: profile.defrost,
+        // heating1 is the Kia NA API field for rear window/defrost heat.
+        // heatingAccessory.rearWindow does not exist in the API schema.
+        heating1: profile.rearWindowHeat ? 1 : 0,
         heatingAccessory: {
-          rearWindow: profile.rearWindowHeat ? 1 : 0,
           sideMirror: profile.sideMirrorHeat ? 1 : 0,
           steeringWheel: profile.steeringWheelHeat > 0 ? 1 : 0,
           steeringWheelStep: profile.steeringWheelHeat,
