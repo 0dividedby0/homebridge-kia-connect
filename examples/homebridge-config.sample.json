@@ -1,0 +1,41 @@
+{
+  "bridge": {
+    "name": "Homebridge",
+    "username": "0E:52:6F:AA:BB:CC",
+    "port": 51826,
+    "pin": "031-45-154"
+  },
+  "accessories": [],
+  "platforms": [
+    {
+      "platform": "KiaConnect",
+      "name": "Kia Connect",
+      "email": "your-kia-email@example.com",
+      "password": "your-kia-password",
+      "otpPort": 38581,
+      "vehicles": [
+        {
+          "name": "My Kia",
+          "vin": "5XXXX0000XX000000",
+          "refreshIntervalSeconds": 3600,
+          "showDoorSensors": false,
+          "climateProfiles": [
+            {
+              "name": "Winter Warmup",
+              "temperature": 74,
+              "duration": 10,
+              "defrost": true,
+              "rearWindowHeat": true,
+              "sideMirrorHeat": true,
+              "steeringWheelHeat": 2,
+              "driverSeat": "high-heat",
+              "passengerSeat": "medium-heat",
+              "rearLeftSeat": "low-heat",
+              "rearRightSeat": "low-heat"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

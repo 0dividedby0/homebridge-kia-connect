@@ -1,5 +1,5 @@
 export const PLATFORM_NAME = 'KiaConnect';
-export const PLUGIN_NAME = 'homebridge-kia-connect-k5';
+export const PLUGIN_NAME = 'homebridge-kia-connect-us';
 
 export const KIA_API_BASE = 'https://api.owners.kia.com/apigw/v1/';
 export const KIA_API_HOST = 'api.owners.kia.com';

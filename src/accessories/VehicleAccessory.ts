@@ -50,7 +50,7 @@ export class VehicleAccessory {
       accessory.addService(this.Service.AccessoryInformation);
     info
       .setCharacteristic(Characteristic.Manufacturer, 'Kia')
-      .setCharacteristic(Characteristic.Model, 'K5')
+      .setCharacteristic(Characteristic.Model, 'Vehicle')
       .setCharacteristic(Characteristic.SerialNumber, config.vin)
       .setCharacteristic(Characteristic.Name, config.name);
 

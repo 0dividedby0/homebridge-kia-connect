@@ -1,13 +1,13 @@
 {
   "private": false,
-  "displayName": "Kia Connect K5",
-  "name": "homebridge-kia-connect-k5",
+  "displayName": "Kia Connect",
+  "name": "homebridge-kia-connect-us",
   "version": "1.0.0",
   "description": "Homebridge plugin for Kia Connect — remote start/stop, lock/unlock, and climate profiles",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/0dividedby0/homebridge-kia-connect-k5.git"
+    "url": "git+https://github.com/0dividedby0/homebridge-kia-connect.git"
   },
   "keywords": ["homebridge-plugin"],
   "files": [
