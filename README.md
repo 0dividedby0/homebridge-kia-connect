@@ -1,218 +1,429 @@
+# homebridge-kia-connect-k5
 
-<p align="center">
+Homebridge plugin for Kia Connect (US API) focused on Kia K5 support.
 
-<img src="https://github.com/homebridge/branding/raw/master/logos/homebridge-wordmark-logo-vertical.png" width="200">
-<br />
-<img src="https://www.cnet.com/a/img/resize/148e264de9d8cc9b7a97bbe2459402fda2406809/hub/2021/01/06/19ab53c1-6b8d-4f44-a89a-b84fc7f825e8/ogi-kia.jpg?auto=webp&fit=crop&height=675&width=1200" width="200">
+It exposes lock controls, engine start/stop, climate profile triggers, fuel level, and optional door/hood/trunk sensors in HomeKit.
 
-</p>
+## Features
 
+- Dynamic platform plugin (`KiaConnect`)
+- Multi-vehicle support (same Kia account)
+- Door lock and unlock from HomeKit
+- Engine switch:
+  - ON: starts the first climate profile (or a safe default profile if none is configured)
+  - OFF: sends remote stop
+- Climate profiles as one-shot HomeKit switches
+- Fuel level as HomeKit Battery service
+- Optional contact sensors for doors, hood, and trunk
+- Session persistence with remember token (`rmtoken`) to reduce OTP prompts
+- Local OTP entry page during authentication
 
-# KIA Connect
+## Requirements
 
-This plug-in uses an undocumented KIA API to start, stop and lock your KIA. This API was discovered by insepecting the network traffic in the KIA Connect web app.
+- Homebridge `>=1.3.5`
+- Node.js `>=16`
+- Kia Connect account credentials
+- At least one vehicle VIN (17 characters)
 
-This plug-in will create a **switch** to turn the engine / climate control on and off as well as a **lock mechanism** to lock / unlock the doors. Several sensors will also be created so that you can build automations:
-1. Contact sensors for front left, front right, back left, back right doors as well as the hood and trunk.
-2. Exterior temperature sensor
-3. Battery level with low battery status
-4. Occupancy sensor that is "occupied" while the engine is running
+## Installation
 
-> Frequently calling this API could result in the consumption of your car's battery power. By default, we make one request per hour and make up to 5 requests after requesting a change of state. This is similar to how the KIA web app works.
+### From source (local development)
 
-### Future Work
-- [x] Battery percentage
-- [ ] Fuel percentage
-- [x] Exterior weather
-- [ ] Heated / air conditioned seats
-- [ ] Defrost
-- [ ] Heated steering wheel
-- [x] Occupancy sensor when engine is on
-- [ ] Add support for other countries (Canada, Europe)
-
-### Known Issues
-When flipping a switch in HomeKit, it could be several seconds before the desired state is achieved. This is due to the aysnc nature and overall speed of KIA's APIs. Typically, a remote command takes around 6 seconds to send, then around 10-15 seconds to be applied to the car.
-
-The door contact sensors all have the same name. Unfortunately this is a limitation of a HomeKit. To overcome this, I would need to refactor the code to create a new Accessory per sensor.
-
-## Installation instructions
-You will need the following items:
-1. Your username / password for the [KIA Connect](https://owners.kia.com/us/en/about-uvo-link.html) web app.
-2. Your VIN number
-
-### Target Temperature
-When the car is started, we will attempt to bring the cabin to the specified temperature. By default, your car will run for 5 minutes, then turn off. This value should be given in Farenheit.
-
-### Refresh Interval
-When the plugin is first started, we get your car's latest info from KIA. After that, we will refresh that info every `refreshInterval` until the plugin is stopped. This value should be given in milliseconds.
-
-In addition to refreshing every `refreshInterval` we will also request vehicle info after an action is requested. This helps HomeKit stay in sync since these actions take some time and could fail due to factors outside of our control.
-
-### Sample config
-```json
-{
-    "platforms": [
-        {
-	   "name": "homebridge-kia-connect",
-           "platform": "KiaConnect",
-           "email": "me@example.com",
-           "password": "my-secret-password",
-           "cars": [
-             {
-               "name": "Telluride",
-               "vin": "XXXXXXXXXXXXXXXXX",
-               "targetTemperature": "68",
-               "refreshInterval": 3600000
-             }
-           ]
-        }
-    ]
-}
-
-```
-
-## Setup Development Environment
-
-To develop Homebridge plugins you must have Node.js 12 or later installed, and a modern code editor such as [VS Code](https://code.visualstudio.com/). This plugin template uses [TypeScript](https://www.typescriptlang.org/) to make development easier and comes with pre-configured settings for [VS Code](https://code.visualstudio.com/) and ESLint. If you are using VS Code install these extensions:
-
-* [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)
-
-## Install Development Dependencies
-
-Using a terminal, navigate to the project folder and run this command to install the development dependencies:
-
-```
+```bash
 npm install
-```
-
-## Update package.json
-
-Open the [`package.json`](./package.json) and change the following attributes:
-
-* `name` - this should be prefixed with `homebridge-` or `@username/homebridge-` and contain no spaces or special characters apart from a dashes
-* `displayName` - this is the "nice" name displayed in the Homebridge UI
-* `repository.url` - Link to your GitHub repo
-* `bugs.url` - Link to your GitHub repo issues page
-
-When you are ready to publish the plugin you should set `private` to false, or remove the attribute entirely.
-
-## Update Plugin Defaults
-
-Open the [`src/settings.ts`](./src/settings.ts) file and change the default values:
-
-* `PLATFORM_NAME` - Set this to be the name of your platform. This is the name of the platform that users will use to register the plugin in the Homebridge `config.json`.
-* `PLUGIN_NAME` - Set this to be the same name you set in the [`package.json`](./package.json) file. 
-
-Open the [`config.schema.json`](./config.schema.json) file and change the following attribute:
-
-* `pluginAlias` - set this to match the `PLATFORM_NAME` you defined in the previous step.
-
-## Build Plugin
-
-TypeScript needs to be compiled into JavaScript before it can run. The following command will compile the contents of your [`src`](./src) directory and put the resulting code into the `dist` folder.
-
-```
 npm run build
 ```
 
-## Link To Homebridge
+For iterative development on a development machine:
 
-Run this command so your global install of Homebridge can discover the plugin in your development environment:
-
-```
-npm link
-```
-
-You can now start Homebridge, use the `-D` flag so you can see debug log messages in your plugin:
-
-```
-homebridge -D
-```
-
-## Watch For Changes and Build Automatically
-
-If you want to have your code compile automatically as you make changes, and restart Homebridge automatically between changes, you first need to add your plugin as a platform in `~/.homebridge/config.json`:
-```
-{
-...
-    "platforms": [
-        {
-            "name": "Config",
-            "port": 8581,
-            "platform": "config"
-        },
-        {
-            "name": "<PLUGIN_NAME>",
-            //... any other options, as listed in config.schema.json ...
-            "platform": "<PLATFORM_NAME>"
-        }
-    ]
-}
-```
-
-and then you can run:
-
-```
+```bash
 npm run watch
 ```
 
-This will launch an instance of Homebridge in debug mode which will restart every time you make a change to the source code. It will load the config stored in the default location under `~/.homebridge`. You may need to stop other running instances of Homebridge while using this command to prevent conflicts. You can adjust the Homebridge startup command in the [`nodemon.json`](./nodemon.json) file.
+## Homebridge Configuration
 
-## Customise Plugin
+Add this platform config to your Homebridge config (or use the Homebridge UI fields generated from `config.schema.json`):
 
-You can now start customising the plugin template to suit your requirements.
+```json
+{
+  "platform": "KiaConnect",
+  "name": "Kia Connect",
+  "email": "your-kia-email@example.com",
+  "password": "your-kia-password",
+  "otpPort": 38581,
+  "vehicles": [
+    {
+      "name": "My K5",
+      "vin": "KNAG24J80P5XXXXXX",
+      "refreshIntervalSeconds": 3600,
+      "showDoorSensors": true,
+      "climateProfiles": [
+        {
+          "name": "Winter Warmup",
+          "temperature": 74,
+          "duration": 10,
+          "defrost": true,
+          "rearWindowHeat": true,
+          "sideMirrorHeat": true,
+          "steeringWheelHeat": 2,
+          "driverSeat": "high-heat",
+          "passengerSeat": "medium-heat",
+          "rearLeftSeat": "low-heat",
+          "rearRightSeat": "low-heat"
+        },
+        {
+          "name": "Summer Cooldown",
+          "temperature": 66,
+          "duration": 10,
+          "defrost": false,
+          "rearWindowHeat": false,
+          "sideMirrorHeat": false,
+          "steeringWheelHeat": 0,
+          "driverSeat": "high-cool",
+          "passengerSeat": "medium-cool",
+          "rearLeftSeat": "off",
+          "rearRightSeat": "off"
+        }
+      ]
+    }
+  ]
+}
+```
 
-* [`src/platform.ts`](./src/platform.ts) - this is where your device setup and discovery should go.
-* [`src/platformAccessory.ts`](./src/platformAccessory.ts) - this is where your accessory control logic should go, you can rename or create multiple instances of this file for each accessory type you need to implement as part of your platform plugin. You can refer to the [developer documentation](https://developers.homebridge.io/) to see what characteristics you need to implement for each service type.
-* [`config.schema.json`](./config.schema.json) - update the config schema to match the config you expect from the user. See the [Plugin Config Schema Documentation](https://developers.homebridge.io/#/config-schema).
+## OTP Login Flow
 
-## Versioning Your Plugin
+When a new login is required, the plugin starts a local OTP HTTP endpoint on `otpPort`.
 
-Given a version number `MAJOR`.`MINOR`.`PATCH`, such as `1.4.3`, increment the:
+- Browser method:
+  - `http://<homebridge-host>:38581/kia-otp`
+- Query-string method:
+  - `http://<homebridge-host>:38581/kia-otp?code=123456`
+- Curl method:
+  - `curl "http://localhost:38581/kia-otp?code=123456"`
 
-1. **MAJOR** version when you make breaking changes to your plugin,
-2. **MINOR** version when you add functionality in a backwards compatible manner, and
-3. **PATCH** version when you make backwards compatible bug fixes.
+If the remember token expires, OTP is required again.
 
-You can use the `npm version` command to help you with this:
+## Raspberry Pi Homebridge OS Testing Guide
+
+This section is for testing on a Raspberry Pi running Homebridge OS.
+
+### 1) Prepare the plugin package on your dev machine
+
+From this project directory:
 
 ```bash
-# major update / breaking changes
-npm version major
-
-# minor update / new features
-npm version update
-
-# patch / bugfixes
-npm version patch
+npm ci
+npm run build
+npm pack
 ```
 
-## Publish Package
+This creates a tarball like `homebridge-kia-connect-k5-1.0.0.tgz`.
 
-When you are ready to publish your plugin to [npm](https://www.npmjs.com/), make sure you have removed the `private` attribute from the [`package.json`](./package.json) file then run:
+### 2) Copy package to Raspberry Pi
 
+Copy the tarball to the Pi (replace host/user as needed):
+
+```bash
+scp homebridge-kia-connect-k5-1.0.0.tgz homebridge@homebridge.local:/tmp/
 ```
+
+### 3) Install on Homebridge OS
+
+SSH into Homebridge:
+
+```bash
+ssh homebridge@homebridge.local
+```
+
+Install the tarball globally for Homebridge:
+
+```bash
+sudo npm install -g --unsafe-perm /tmp/homebridge-kia-connect-k5-1.0.0.tgz
+```
+
+### 4) Configure plugin in Homebridge UI
+
+- Open Homebridge UI (`http://homebridge.local:8581` by default)
+- Go to Plugins or Config
+- Add platform `KiaConnect` with:
+  - email
+  - password
+  - otpPort (default `38581`)
+  - at least one vehicle VIN
+- Save and restart Homebridge
+
+### 5) Complete OTP on first authentication
+
+From a device on the same network, open:
+
+- `http://homebridge.local:38581/kia-otp`
+
+Enter the 6-digit code and wait for success confirmation.
+
+If `homebridge.local` does not resolve, use the Pi IP:
+
+- `http://<PI_IP>:38581/kia-otp`
+
+### 6) Validate behavior in logs
+
+In Homebridge UI logs, confirm messages similar to:
+
+- OTP server listening
+- authentication successful
+- vehicle registered or restored
+- periodic status refresh
+
+Then test in Apple Home:
+
+- Lock and unlock the car
+- Turn Engine switch ON/OFF
+- Trigger climate profile switches
+- Check fuel level
+- Verify door sensors (if enabled)
+
+### 7) Regression checklist after restart
+
+Restart Homebridge and verify:
+
+- Vehicle accessory restores from cache
+- Commands still execute
+- OTP is not required again unless token expired
+
+## VS Code Remote SSH Dev Environment (Raspberry Pi)
+
+You can develop directly on your Raspberry Pi Homebridge OS instance using VS Code Remote - SSH.
+
+### 1) Enable SSH on Homebridge OS
+
+- In Homebridge UI, open Terminal settings and enable SSH.
+- From your Mac, verify access:
+
+```bash
+ssh homebridge@homebridge.local
+```
+
+### 2) Connect from VS Code
+
+- Install extension: Remote - SSH
+- Add a host entry in your SSH config:
+
+```sshconfig
+Host homebridge-pi
+  HostName homebridge.local
+  User homebridge
+```
+
+- In VS Code, run: Remote-SSH: Connect to Host... and select `homebridge-pi`.
+
+### 3) Clone plugin source on the Pi
+
+In the VS Code remote terminal:
+
+```bash
+mkdir -p ~/dev
+cd ~/dev
+git clone <your-repo-url> homebridge-kia-connect-k5
+cd homebridge-kia-connect-k5
+npm ci
+npm run build
+```
+
+### 4) Link plugin into Homebridge runtime
+
+From plugin directory:
+
+```bash
+sudo npm link
+```
+
+Then link it in Homebridge app directory:
+
+```bash
+cd /var/lib/homebridge
+sudo npm link homebridge-kia-connect-k5
+sudo hb-service restart
+```
+
+### 5) Fast edit-build-test loop
+
+From plugin source directory:
+
+```bash
+npm run watch
+```
+
+After meaningful changes, restart Homebridge service:
+
+```bash
+sudo hb-service restart
+```
+
+Check Homebridge UI logs and verify command behavior in Apple Home.
+
+### 6) Reliable fallback if linking is problematic
+
+If `npm link` behaves unexpectedly on your Pi, use package install flow instead:
+
+```bash
+cd ~/dev/homebridge-kia-connect-k5
+npm pack
+sudo npm install -g --unsafe-perm ./homebridge-kia-connect-k5-1.0.0.tgz
+sudo hb-service restart
+```
+
+Tip: Replace the tarball filename with the version you generated.
+
+## Local Smoke Test (SSH Workspace)
+
+For this repository, a local Homebridge test config is included at `.homebridge-dev/config.json`.
+
+1) Edit credentials and vehicle values:
+
+- `email`
+- `password`
+- `vehicles[0].vin`
+
+2) Build and run Homebridge against this plugin source path:
+
+```bash
+npm run dev:smoke
+```
+
+This command:
+
+- compiles TypeScript to `dist/`
+- starts Homebridge in debug + insecure mode
+- uses `.homebridge-dev` as user storage
+- loads plugins only from this repository path
+
+3) Verify in output:
+
+- plugin registration (`KiaConnect`)
+- accessory registration/restoration
+- OTP server start when fresh login is needed
+
+4) Submit OTP from another device on your network:
+
+```bash
+http://<pi-ip>:38581/kia-otp
+```
+
+5) Stop the smoke test with Ctrl+C.
+
+## Build And Install
+
+### Build a distributable package
+
+From the project directory:
+
+```bash
+npm run build
+npm pack
+```
+
+This creates a tarball like:
+
+```bash
+homebridge-kia-connect-k5-1.0.0.tgz
+```
+
+### Install the built package on Homebridge
+
+If you are installing on the same Homebridge Pi where you built the package:
+
+```bash
+cd /home/pi/homebridge-kia-connect
+sudo npm install -g --unsafe-perm ./homebridge-kia-connect-k5-1.0.0.tgz
+sudo hb-service restart
+```
+
+If you built elsewhere, copy the tarball to the Homebridge machine and install it there:
+
+```bash
+scp homebridge-kia-connect-k5-1.0.0.tgz homebridge@homebridge.local:/tmp/
+ssh homebridge@homebridge.local
+sudo npm install -g --unsafe-perm /tmp/homebridge-kia-connect-k5-1.0.0.tgz
+sudo hb-service restart
+```
+
+After installation:
+
+- open the Homebridge UI
+- confirm the `KiaConnect` platform is installed
+- add or update the platform config
+- restart Homebridge if required
+- complete OTP if prompted
+
+## Install From Source
+
+If you want Homebridge to run directly from your working tree while you edit code:
+
+```bash
+cd /home/pi/homebridge-kia-connect
+sudo npm link
+cd /var/lib/homebridge
+sudo npm link homebridge-kia-connect-k5
+sudo hb-service restart
+```
+
+This is the fastest loop for active development on the Pi.
+
+## Publish To npm
+
+The package is set up to publish only the runtime files needed by Homebridge.
+
+### Validate before publishing
+
+```bash
+npm run build
+npm publish --dry-run
+```
+
+### Publish
+
+```bash
+npm login
 npm publish
 ```
 
-If you are publishing a scoped plugin, i.e. `@username/homebridge-xxx` you will need to add `--access=public` to command the first time you publish.
-
-#### Publishing Beta Versions
-
-You can publish *beta* versions of your plugin for other users to test before you release it to everyone.
+If you need a new version first:
 
 ```bash
-# create a new pre-release version (eg. 2.1.0-beta.1)
-npm version prepatch --preid beta
-
-# publish to @beta
-npm publish --tag=beta
+npm version patch
+npm publish
 ```
 
-Users can then install the  *beta* version by appending `@beta` to the install command, for example:
+Use `patch`, `minor`, or `major` depending on the release.
 
+### Release checklist
+
+- run `npm run lint`
+- run `npm run build`
+- run `npm run dev:smoke` for a quick local verification
+- run `npm publish --dry-run`
+- publish with `npm publish`
+
+## Troubleshooting
+
+- Missing credentials:
+  - Ensure `email` and `password` are present in config.
+- VIN not found:
+  - Confirm VIN is exactly 17 characters and belongs to the same Kia account.
+- OTP page unreachable:
+  - Check port conflicts and firewall rules, or change `otpPort`.
+- Frequent wake/polling concerns:
+  - Increase `refreshIntervalSeconds` (minimum is 300; default is 3600).
+
+## Development Scripts
+
+```bash
+npm run build      # compile TypeScript to dist/
+npm run lint       # run ESLint
+npm run watch      # build + link + nodemon for development
+npm run dev:homebridge  # run local Homebridge against this repo
+npm run dev:smoke       # build + run local Homebridge smoke test
 ```
-sudo npm install -g homebridge-example-plugin@beta
-```
 
+## License
 
+Apache-2.0

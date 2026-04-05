@@ -2,73 +2,177 @@
   "pluginAlias": "KiaConnect",
   "pluginType": "platform",
   "singular": true,
+  "headerDisplay": "Kia Connect — remote start, lock, and climate profiles for HomeKit.",
   "schema": {
     "type": "object",
     "properties": {
-      "email": {
-        "title": "Email",
+      "name": {
+        "title": "Platform Name",
         "type": "string",
+        "default": "Kia Connect"
+      },
+      "email": {
+        "title": "Kia Connect Email",
+        "type": "string",
+        "format": "email",
         "required": true
       },
       "password": {
-        "title": "Password",
+        "title": "Kia Connect Password",
         "type": "string",
         "required": true
       },
-      "cars": {
-        "title": "VINs",
-        "description": "The VINs of the vehicles you want to connect to.",
+      "otpPort": {
+        "title": "OTP Server Port",
+        "description": "Local HTTP port used to submit your OTP code during first login or when your session expires. Visit http://homebridge-ip:PORT/kia-otp to enter your code.",
+        "type": "integer",
+        "default": 38581,
+        "minimum": 1024,
+        "maximum": 65535
+      },
+      "vehicles": {
+        "title": "Vehicles",
         "type": "array",
         "required": true,
         "items": {
           "type": "object",
           "properties": {
             "name": {
-              "title": "Name",
+              "title": "Vehicle Name",
+              "description": "Display name in HomeKit (e.g. 'My K5').",
               "type": "string",
               "required": true
-            },
-            "targetTemperature": {
-              "title": "Target Temperature (F)",
-              "type": "string",
-              "required": true,
-              "enum": [
-                "LOW",
-                "62",
-                "63",
-                "64",
-                "65",
-                "66",
-                "67",
-                "68",
-                "69",
-                "70",
-                "71",
-                "72",
-                "73",
-                "74",
-                "75",
-                "76",
-                "77",
-                "78",
-                "79",
-                "80",
-                "81",
-                "82",
-                "HIGH"
-              ]
             },
             "vin": {
               "title": "VIN",
+              "description": "Vehicle Identification Number (17 characters).",
               "type": "string",
-              "required": true
-            },
-            "refreshInterval": {
-              "title": "Refresh Interval (ms)",
-              "description": "The number of milliseconds to wait between refreshing the vehicle's info. Setting this to a low number could drain your cars battery. Do not set below 10 seconds, some API requests take at least 10 seconds to respond.",
-              "type": "number",
               "required": true,
-              "default": 3600000
+              "minLength": 17,
+              "maxLength": 17
+            },
+            "refreshIntervalSeconds": {
+              "title": "Status Refresh Interval (seconds)",
+              "description": "How often to poll for vehicle status. Minimum 300 (5 min). Defaults to 3600 (1 hour). Polling too frequently can wake the car and drain its 12V battery.",
+              "type": "integer",
+              "default": 3600,
+              "minimum": 300
+            },
+            "showDoorSensors": {
+              "title": "Show Door Sensors",
+              "description": "Expose individual door/hood/trunk open/close sensors in HomeKit.",
+              "type": "boolean",
+              "default": false
+            },
+            "climateProfiles": {
+              "title": "Climate Profiles",
+              "description": "Each profile appears as a Switch in HomeKit. Activating it starts the engine with those exact climate settings.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "title": "Profile Name",
+                    "description": "Shown in HomeKit (e.g. 'Winter Mode').",
+                    "type": "string",
+                    "required": true
+                  },
+                  "temperature": {
+                    "title": "Target Temperature (°F)",
+                    "description": "62–82, or the strings 'LOW' or 'HIGH'.",
+                    "type": "number",
+                    "default": 72,
+                    "minimum": 62,
+                    "maximum": 82
+                  },
+                  "duration": {
+                    "title": "Run Duration (minutes)",
+                    "description": "How long the engine will run remotely (2–10 minutes).",
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 2,
+                    "maximum": 10
+                  },
+                  "defrost": {
+                    "title": "Front Defrost",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "rearWindowHeat": {
+                    "title": "Rear Window Heat",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "sideMirrorHeat": {
+                    "title": "Side Mirror Heat",
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "steeringWheelHeat": {
+                    "title": "Steering Wheel Heat",
+                    "description": "0 = Off, 1 = Low, 2 = High",
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 2,
+                    "oneOf": [
+                      { "title": "Off", "enum": [0] },
+                      { "title": "Low", "enum": [1] },
+                      { "title": "High", "enum": [2] }
+                    ]
+                  },
+                  "driverSeat": {
+                    "title": "Driver Seat",
+                    "type": "string",
+                    "default": "off",
+                    "oneOf": [
+                      { "title": "Off", "enum": ["off"] },
+                      { "title": "Low Heat", "enum": ["low-heat"] },
+                      { "title": "Medium Heat", "enum": ["medium-heat"] },
+                      { "title": "High Heat", "enum": ["high-heat"] },
+                      { "title": "Low Cool", "enum": ["low-cool"] },
+                      { "title": "Medium Cool", "enum": ["medium-cool"] },
+                      { "title": "High Cool", "enum": ["high-cool"] }
+                    ]
+                  },
+                  "passengerSeat": {
+                    "title": "Passenger Seat",
+                    "type": "string",
+                    "default": "off",
+                    "oneOf": [
+                      { "title": "Off", "enum": ["off"] },
+                      { "title": "Low Heat", "enum": ["low-heat"] },
+                      { "title": "Medium Heat", "enum": ["medium-heat"] },
+                      { "title": "High Heat", "enum": ["high-heat"] },
+                      { "title": "Low Cool", "enum": ["low-cool"] },
+                      { "title": "Medium Cool", "enum": ["medium-cool"] },
+                      { "title": "High Cool", "enum": ["high-cool"] }
+                    ]
+                  },
+                  "rearLeftSeat": {
+                    "title": "Rear Left Seat",
+                    "type": "string",
+                    "default": "off",
+                    "oneOf": [
+                      { "title": "Off", "enum": ["off"] },
+                      { "title": "Low Heat", "enum": ["low-heat"] },
+                      { "title": "Medium Heat", "enum": ["medium-heat"] },
+                      { "title": "High Heat", "enum": ["high-heat"] }
+                    ]
+                  },
+                  "rearRightSeat": {
+                    "title": "Rear Right Seat",
+                    "type": "string",
+                    "default": "off",
+                    "oneOf": [
+                      { "title": "Off", "enum": ["off"] },
+                      { "title": "Low Heat", "enum": ["low-heat"] },
+                      { "title": "Medium Heat", "enum": ["medium-heat"] },
+                      { "title": "High Heat", "enum": ["high-heat"] }
+                    ]
+                  }
+                }
+              }
             }
           }
         }

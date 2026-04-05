@@ -1,95 +1,97 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-
+import {
+  API,
+  DynamicPlatformPlugin,
+  Logger,
+  PlatformAccessory,
+  PlatformConfig,
+  Service,
+  Characteristic,
+} from 'homebridge';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
-import { Car } from './platformAccessory';
-import { KiaConnect } from './kiaconnect/client';
+import { AuthManager } from './kia/auth';
+import { KiaClient } from './kia/client';
+import { VehicleAccessory } from './accessories/VehicleAccessory';
+import { VehicleConfig } from './kia/types';
 
-/**
- * HomebridgePlatform
- * This class is the main constructor for your plugin, this is where you should
- * parse the user config and discover/register accessories with Homebridge.
- */
-export class Platform implements DynamicPlatformPlugin {
-  private kiaConnect: KiaConnect;
+export class KiaConnectPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
-
-  // this is used to track restored cached accessories
-  public readonly accessories: PlatformAccessory[] = [];
+  public readonly cachedAccessories: PlatformAccessory[] = [];
 
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    this.log.debug('Finished initializing platform:', this.config.name);
-    this.kiaConnect = new KiaConnect(this.config.email, this.config.password, this.log);
-
-    // When this event is fired it means Homebridge has restored all cached accessories from disk.
-    // Dynamic Platform plugins should only register new accessories after this event was fired,
-    // in order to ensure they weren't added to homebridge already. This event can also be used
-    // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
-      this.discoverDevices();
+      this.discoverVehicles();
     });
   }
 
-  /**
-   * This function is invoked when homebridge restores cached accessories from disk at startup.
-   * It should be used to setup event handlers for characteristics and update respective values.
-   */
-  configureAccessory(accessory: PlatformAccessory) {
-    this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache so we can track if it has already been registered
-    this.accessories.push(accessory);
+  /** Homebridge calls this for every accessory it restores from cache. */
+  configureAccessory(accessory: PlatformAccessory): void {
+    this.cachedAccessories.push(accessory);
   }
 
-  /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
-   */
-  async discoverDevices() {
-    this.config.cars.forEach(async (car) => {
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(car.vin);
+  private discoverVehicles(): void {
+    const email = this.config.email as string | undefined;
+    const password = this.config.password as string | undefined;
+    const vehicles = (this.config.vehicles ?? []) as VehicleConfig[];
+    const otpPort = (this.config.otpPort as number | undefined) ?? 38581;
 
-      // see if an accessory with the same uuid has already been registered and restored from
-      // the cached devices we stored in the `configureAccessory` method above
-      const existingAccessory = this.accessories.find(accessory => accessory.UUID === uuid);
+    if (!email || !password) {
+      this.log.error('[Kia] Missing email or password in config. Plugin will not start.');
+      return;
+    }
 
-      if (existingAccessory) {
-      // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+    if (vehicles.length === 0) {
+      this.log.warn('[Kia] No vehicles configured. Add at least one vehicle in the plugin settings.');
+      return;
+    }
 
-        // create the accessory handler for the restored accessory
-        // this is imported from `platformAccessory.ts`
-        new Car(this, existingAccessory, this.kiaConnect, car.name, car.vin, car.targetTemperature, car.refreshInterval);
+    // One AuthManager shared across all vehicles on the same account.
+    const storagePath = this.api.user.storagePath();
+    const auth = new AuthManager(email, password, storagePath, otpPort, this.log);
 
-      // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, eg.:
-      // remove platform accessories when no longer present
-      // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-      // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
+    for (const vehicleConfig of vehicles) {
+      if (!vehicleConfig.vin || vehicleConfig.vin.length !== 17) {
+        this.log.error(`[Kia] Vehicle "${vehicleConfig.name}" has an invalid VIN — skipping.`);
+        continue;
+      }
+
+      // Normalise optional fields.
+      const config: VehicleConfig = {
+        name: vehicleConfig.name ?? vehicleConfig.vin,
+        vin: vehicleConfig.vin,
+        refreshIntervalSeconds: vehicleConfig.refreshIntervalSeconds ?? 3600,
+        showDoorSensors: vehicleConfig.showDoorSensors ?? false,
+        climateProfiles: vehicleConfig.climateProfiles ?? [],
+      };
+
+      const client = new KiaClient(config.vin, auth, this.log);
+      const uuid = this.api.hap.uuid.generate(config.vin);
+
+      const existing = this.cachedAccessories.find((a) => a.UUID === uuid);
+      if (existing) {
+        this.log.info(`[Kia] Restoring "${config.name}" from cache.`);
+        existing.displayName = config.name;
+        this.api.updatePlatformAccessories([existing]);
+        new VehicleAccessory(this, existing, client, config);
       } else {
-      // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', car.vin);
-
-        // create a new accessory
-        const accessory = new this.api.platformAccessory(car.vin, uuid);
-
-        // create the accessory handler for the newly create accessory
-        // this is imported from `platformAccessory.ts`
-        new Car(this, accessory, this.kiaConnect, car.name, car.vin, car.targetTemperature, car.refreshInterval);
-
-        // link the accessory to your platform
+        this.log.info(`[Kia] Registering new vehicle: ${config.name} (${config.vin})`);
+        const accessory = new this.api.platformAccessory(config.name, uuid);
+        accessory.context.vin = config.vin;
+        new VehicleAccessory(this, accessory, client, config);
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
-    });
+    }
 
+    // Remove accessories for VINs no longer in config.
+    const configuredUuids = new Set(vehicles.map((v) => this.api.hap.uuid.generate(v.vin)));
+    const stale = this.cachedAccessories.filter((a) => !configuredUuids.has(a.UUID));
+    if (stale.length > 0) {
+      this.log.info(`[Kia] Removing ${stale.length} stale accessory/accessories.`);
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    }
   }
 }

@@ -1,11 +1,7 @@
 import { API } from 'homebridge';
-
 import { PLATFORM_NAME } from './settings';
-import { Platform } from './platform';
+import { KiaConnectPlatform } from './platform';
 
-/**
- * This method registers the platform with Homebridge
- */
-export = (api: API) => {
-  api.registerPlatform(PLATFORM_NAME, Platform);
+export = (api: API): void => {
+  api.registerPlatform(PLATFORM_NAME, KiaConnectPlatform);
 };

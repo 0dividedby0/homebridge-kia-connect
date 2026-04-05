@@ -1,9 +1,8 @@
-/**
- * This is the name of the platform that users will use to register the plugin in the Homebridge config.json
- */
 export const PLATFORM_NAME = 'KiaConnect';
+export const PLUGIN_NAME = 'homebridge-kia-connect-k5';
 
-/**
- * This must match the name of your plugin as defined the package.json
- */
-export const PLUGIN_NAME = 'homebridge-kia-connect';
+export const KIA_API_BASE = 'https://api.owners.kia.com/apigw/v1/';
+export const KIA_API_HOST = 'api.owners.kia.com';
+
+/** Session lifetime: Kia sessions last ~23 hours */
+export const SESSION_TTL_MS = 23 * 60 * 60 * 1000;
