@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.3] - 2026-04-18
+
+### Added
+- **Engine running indicator** — added a separate HomeKit occupancy sensor so engine state is visible even when climate profile switches are off.
+
+### Changed
+- **Climate profile switch naming** — profile switches are now exposed as `<vehicle name> <profile name>` to improve Siri matching while keeping them grouped under the main vehicle accessory.
+- **Door status presentation** — replaced the individual front/rear/hood/trunk contact sensors with a single combined openings sensor that reports open if any door, the hood, or the trunk is open.
+
+### Fixed
+- **Climate profile switches staying ON too long** — profile switches now auto-reset to OFF after the configured remote-start duration so HomeKit better reflects the end of the session.
+
 ## [1.1.2] - 2026-04-04
 
 ### Fixed

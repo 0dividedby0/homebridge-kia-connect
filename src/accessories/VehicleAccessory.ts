@@ -15,9 +15,10 @@ import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
  *                      settings; stays ON while the engine is running from
  *                      that profile.  Turning it OFF stops the engine.
  *                      Switching to a different profile starts it fresh.
- *  • Battery        — fuel level + low-fuel warning
- *  • ContactSensor × 6 — individual door, hood, trunk sensors
- *                       (only when showDoorSensors = true)
+ *  • OccupancySensor — engine running indicator
+ *  • Battery         — fuel level + low-fuel warning
+ *  • ContactSensor   — combined door/hood/trunk status
+ *                      (only when showDoorSensors = true)
  */
 export class VehicleAccessory {
   private readonly Service: typeof Service;
@@ -29,13 +30,15 @@ export class VehicleAccessory {
   private activeProfileName: string | null = null;
   /** True while a climate START command is in-flight (prevents pushUpdates from clearing activeProfileName). */
   private climateCommandInFlight = false;
+  private profileAutoOffTimer: NodeJS.Timeout | null = null;
 
   // Service references
   private readonly lockService: Service;
   private readonly engineService: Service | null;
+  private readonly engineRunningService: Service;
   private readonly profileServices: Map<string, Service> = new Map();
   private readonly batteryService: Service;
-  private readonly doorServices: Map<string, Service> = new Map();
+  private readonly openingService: Service | null;
 
   constructor(
     private readonly platform: KiaConnectPlatform,
@@ -103,6 +106,24 @@ export class VehicleAccessory {
         });
       });
 
+    // ── Engine running indicator ──────────────────────────────────────────
+    this.engineRunningService =
+      accessory.getServiceById(this.Service.OccupancySensor, `${config.vin}:engine-running`) ??
+      accessory.addService(
+        this.Service.OccupancySensor,
+        `${config.name} Engine Running`,
+        `${config.vin}:engine-running`,
+      );
+    setServiceName(this.engineRunningService, Characteristic, `${config.name} Engine Running`);
+
+    this.engineRunningService
+      .getCharacteristic(Characteristic.OccupancyDetected)
+      .onGet(() =>
+        this.status?.isEngineOn
+          ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
+          : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
+      );
+
     // ── Engine switch (bare start — only when no profiles are configured) ──
     if (config.climateProfiles.length === 0) {
       this.engineService =
@@ -161,10 +182,11 @@ export class VehicleAccessory {
     // Switching to a different profile while one is running replaces it.
     for (const profile of config.climateProfiles) {
       const subtype = `profile:${config.vin}:${profile.name}`;
+      const serviceName = `${config.name} ${profile.name}`;
       const svc =
         accessory.getServiceById(this.Service.Switch, subtype) ??
-        accessory.addService(this.Service.Switch, profile.name, subtype);
-      setServiceName(svc, Characteristic, profile.name);
+        accessory.addService(this.Service.Switch, serviceName, subtype);
+      setServiceName(svc, Characteristic, serviceName);
 
       svc
         .getCharacteristic(Characteristic.On)
@@ -180,7 +202,9 @@ export class VehicleAccessory {
             // Already the active/starting profile — drop duplicate SETs (HomeKit
             // often sends more than one from phone + hub at the same time).
             if (this.activeProfileName === profile.name) {
-              log.debug(`[${config.name}] Profile "${profile.name}" already active or starting, ignoring.`);
+              log.debug(
+                `[${config.name}] Profile "${profile.name}" already active or starting, ignoring.`,
+              );
               return;
             }
             // Switch any previously-active profile switch to OFF.
@@ -189,6 +213,7 @@ export class VehicleAccessory {
               prev?.updateCharacteristic(Characteristic.On, false);
             }
             this.activeProfileName = profile.name;
+            this.scheduleProfileAutoOff(profile);
             this.climateCommandInFlight = true;
             // Fire-and-forget: respond to HomeKit immediately.
             this.enqueueCommand(async () => {
@@ -199,6 +224,7 @@ export class VehicleAccessory {
               } catch (err) {
                 log.error(`[${config.name}] Climate profile "${profile.name}" failed:`, err);
                 // Revert switch to off on failure.
+                this.clearProfileAutoOffTimer();
                 if (this.activeProfileName === profile.name) this.activeProfileName = null;
                 svc.updateCharacteristic(Characteristic.On, false);
               } finally {
@@ -211,6 +237,7 @@ export class VehicleAccessory {
               log.debug(`[${config.name}] Profile "${profile.name}" is not active, ignoring OFF.`);
               return;
             }
+            this.clearProfileAutoOffTimer();
             this.activeProfileName = null;
             // Fire-and-forget: respond to HomeKit immediately.
             this.enqueueCommand(async () => {
@@ -255,32 +282,36 @@ export class VehicleAccessory {
       .getCharacteristic(Characteristic.ChargingState)
       .onGet(() => Characteristic.ChargingState.NOT_CHARGEABLE);
 
-    // ── Door sensors (optional) ───────────────────────────────────────────
+    // ── Opening sensor (optional) ────────────────────────────────────────
     if (config.showDoorSensors) {
-      const doorDefs: Array<{ key: keyof VehicleStatus['doors']; label: string }> = [
-        { key: 'frontLeft', label: 'Front Left Door' },
-        { key: 'frontRight', label: 'Front Right Door' },
-        { key: 'rearLeft', label: 'Rear Left Door' },
-        { key: 'rearRight', label: 'Rear Right Door' },
-        { key: 'hood', label: 'Hood' },
-        { key: 'trunk', label: 'Trunk' },
-      ];
-      for (const { key, label } of doorDefs) {
-        const subtype = `door:${config.vin}:${key}`;
-        const svc =
-          accessory.getServiceById(this.Service.ContactSensor, subtype) ??
-          accessory.addService(this.Service.ContactSensor, label, subtype);
-        setServiceName(svc, Characteristic, label);
-        svc
-          .getCharacteristic(Characteristic.ContactSensorState)
-          .onGet(() =>
-            this.status?.doors[key]
-              ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-              : Characteristic.ContactSensorState.CONTACT_DETECTED,
-          );
-        this.doorServices.set(key, svc);
+      const subtype = `openings:${config.vin}`;
+      this.openingService =
+        accessory.getServiceById(this.Service.ContactSensor, subtype) ??
+        accessory.addService(
+          this.Service.ContactSensor,
+          `${config.name} Openings`,
+          subtype,
+        );
+      setServiceName(this.openingService, Characteristic, `${config.name} Openings`);
+      this.openingService
+        .getCharacteristic(Characteristic.ContactSensorState)
+        .onGet(() =>
+          isAnyOpeningOpen(this.status)
+            ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+            : Characteristic.ContactSensorState.CONTACT_DETECTED,
+        );
+    } else {
+      this.openingService = null;
+      const staleOpenings = accessory.getServiceById(
+        this.Service.ContactSensor,
+        `openings:${config.vin}`,
+      );
+      if (staleOpenings) {
+        accessory.removeService(staleOpenings);
       }
     }
+
+    this.removeLegacyDoorSensors();
 
     // ── Initial refresh + polling loop ────────────────────────────────────
     this.startPolling();
@@ -329,6 +360,13 @@ export class VehicleAccessory {
       this.getLockTargetState(),
     );
 
+    this.engineRunningService.updateCharacteristic(
+      Characteristic.OccupancyDetected,
+      this.status.isEngineOn
+        ? Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
+        : Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
+    );
+
     // Engine switch (bare-start mode — only present when no profiles configured)
     this.engineService?.updateCharacteristic(Characteristic.On, this.status.isEngineOn);
 
@@ -340,6 +378,7 @@ export class VehicleAccessory {
         // active profile (and allow duplicate starts) just because the status
         // momentarily shows engine-off while the command is still running.
         if (!this.climateCommandInFlight) {
+          this.clearProfileAutoOffTimer();
           this.activeProfileName = null;
         }
         for (const [name, svc] of this.profileServices) {
@@ -369,17 +408,14 @@ export class VehicleAccessory {
         : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
     );
 
-    // Door sensors
-    if (this.config.showDoorSensors) {
-      for (const [key, svc] of this.doorServices) {
-        const isOpen = this.status.doors[key as keyof VehicleStatus['doors']];
-        svc.updateCharacteristic(
-          Characteristic.ContactSensorState,
-          isOpen
-            ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
-            : Characteristic.ContactSensorState.CONTACT_DETECTED,
-        );
-      }
+    // Opening sensor
+    if (this.openingService) {
+      this.openingService.updateCharacteristic(
+        Characteristic.ContactSensorState,
+        isAnyOpeningOpen(this.status)
+          ? Characteristic.ContactSensorState.CONTACT_NOT_DETECTED
+          : Characteristic.ContactSensorState.CONTACT_DETECTED,
+      );
     }
   }
 
@@ -415,6 +451,52 @@ export class VehicleAccessory {
       ? Characteristic.LockTargetState.SECURED
       : Characteristic.LockTargetState.UNSECURED;
   }
+
+  private scheduleProfileAutoOff(profile: ClimateProfile): void {
+    this.clearProfileAutoOffTimer();
+    this.profileAutoOffTimer = setTimeout(() => {
+      if (this.activeProfileName !== profile.name) {
+        return;
+      }
+
+      const { Characteristic } = this.platform.api.hap;
+      this.platform.log.debug(
+        `[${this.config.name}] Auto-clearing profile "${profile.name}" after ${profile.duration} minute timeout.`,
+      );
+      this.activeProfileName = null;
+      this.profileAutoOffTimer = null;
+      this.profileServices.get(profile.name)?.updateCharacteristic(Characteristic.On, false);
+      void this.refresh();
+    }, profile.duration * 60_000);
+  }
+
+  private clearProfileAutoOffTimer(): void {
+    if (this.profileAutoOffTimer) {
+      clearTimeout(this.profileAutoOffTimer);
+      this.profileAutoOffTimer = null;
+    }
+  }
+
+  private removeLegacyDoorSensors(): void {
+    const legacyKeys: Array<keyof VehicleStatus['doors']> = [
+      'frontLeft',
+      'frontRight',
+      'rearLeft',
+      'rearRight',
+      'hood',
+      'trunk',
+    ];
+
+    for (const key of legacyKeys) {
+      const stale = this.accessory.getServiceById(
+        this.Service.ContactSensor,
+        `door:${this.config.vin}:${key}`,
+      );
+      if (stale) {
+        this.accessory.removeService(stale);
+      }
+    }
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -445,4 +527,12 @@ function setServiceName(
   if ('ConfiguredName' in characteristic) {
     service.setCharacteristic(characteristic.ConfiguredName, name);
   }
+}
+
+function isAnyOpeningOpen(status: VehicleStatus | null): boolean {
+  if (!status) {
+    return false;
+  }
+
+  return Object.values(status.doors).some(Boolean);
 }

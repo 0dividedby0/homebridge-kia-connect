@@ -8,9 +8,10 @@ Homebridge plugin for Kia Connect (US API). Works with any vehicle on a US Kia C
 
 - Lock and unlock from HomeKit
 - Remote engine start / stop
-- Climate profiles as one-shot HomeKit switches (each profile triggers a remote start with specific temperature, seat heat/cool, defrost, and duration settings)
+- Climate profiles as grouped HomeKit switches with automatic timeout reset after the configured run duration
+- Separate engine-running indicator service for quick status checks
 - Fuel level as a HomeKit Battery service
-- Optional contact sensors for front, rear, hood, and trunk
+- Optional combined openings sensor that shows open when any door, the hood, or the trunk is open
 - Multi-vehicle support (all vehicles on the same Kia account)
 - Session persistence via remember token — minimises OTP prompts
 - Local web page for OTP entry during first login
@@ -51,7 +52,7 @@ Add the platform to your Homebridge config, or use the UI form generated from th
       "showDoorSensors": false,
       "climateProfiles": [
         {
-          "name": "Winter Warmup",
+          "name": "Heat",
           "temperature": 74,
           "duration": 10,
           "defrost": true,
@@ -64,7 +65,7 @@ Add the platform to your Homebridge config, or use the UI form generated from th
           "rearRightSeat": "low-heat"
         },
         {
-          "name": "Summer Cooldown",
+          "name": "Cool",
           "temperature": 66,
           "duration": 10,
           "defrost": false,
@@ -92,8 +93,21 @@ Add the platform to your Homebridge config, or use the UI form generated from th
 | `vehicles[].name` | string | yes | Display name in HomeKit |
 | `vehicles[].vin` | string | yes | 17-character VIN |
 | `vehicles[].refreshIntervalSeconds` | number | no | How often to poll vehicle status (default `3600`, minimum `300`) |
-| `vehicles[].showDoorSensors` | boolean | no | Expose individual door / hood / trunk contact sensors (default `false`) |
-| `vehicles[].climateProfiles` | array | no | Named remote-start presets; each becomes a momentary HomeKit switch |
+| `vehicles[].showDoorSensors` | boolean | no | Expose one combined contact sensor for all doors, hood, and trunk (default `false`) |
+| `vehicles[].climateProfiles` | array | no | Named remote-start presets; each becomes a grouped HomeKit switch named `<vehicle> <profile>` and turns back off after its configured duration |
+
+## HomeKit Behavior
+
+- The main vehicle accessory stays grouped around the lock so it keeps the secure, car-like presentation in Home.
+- Each climate profile is exposed as a switch named `<vehicle name> <profile name>`. This makes Siri phrase matching more reliable than a bare child switch name like `Heat`.
+- A separate occupancy sensor named `<vehicle name> Engine Running` indicates whether the engine is currently on.
+- If `showDoorSensors` is enabled, HomeKit shows one contact sensor named `<vehicle name> Openings` that goes open when any door, the hood, or the trunk is open.
+
+### Siri Tips
+
+- Prefer short profile names like `Heat`, `Cool`, or `Defrost`.
+- Say the full generated name, for example: `Turn on 2022 K5 Heat`.
+- If Siri is still inconsistent, create Home scenes such as `Warm up car` or `Cool down car` that toggle the profile switches. Siri usually resolves scene names more reliably than grouped child services.
 
 #### Climate profile seat levels
 
@@ -127,6 +141,34 @@ npm run build        # compile TypeScript → dist/
 npm run lint         # ESLint
 npm run watch        # build + npm link + nodemon (live reload)
 npm run dev:smoke    # build + run local Homebridge against this repo
+```
+
+## Deploying Changes
+
+### Deploy to the local Homebridge instance on this machine
+
+This repo is already linked into the global Homebridge plugin install on this system, so deploying a code change locally is just:
+
+```bash
+npm run lint
+npm run build
+sudo systemctl restart homebridge
+```
+
+That rebuilds `dist/` in this repo and then restarts Homebridge so it loads the new code.
+
+### Fresh manual install on another Homebridge host
+
+```bash
+npm install -g homebridge-kia-connect-us
+sudo systemctl restart homebridge
+```
+
+### Update an existing manual install from npm
+
+```bash
+npm install -g homebridge-kia-connect-us@latest
+sudo systemctl restart homebridge
 ```
 
 ### Publishing

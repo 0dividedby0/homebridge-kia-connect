@@ -59,14 +59,14 @@
               "minimum": 300
             },
             "showDoorSensors": {
-              "title": "Show Door Sensors",
-              "description": "Expose individual door/hood/trunk open/close sensors in HomeKit.",
+              "title": "Show Openings Sensor",
+              "description": "Expose a single HomeKit sensor that shows open when any door, the hood, or the trunk is open.",
               "type": "boolean",
               "default": false
             },
             "climateProfiles": {
               "title": "Climate Profiles",
-              "description": "Each profile appears as a Switch in HomeKit. Activating it starts the engine with those exact climate settings.",
+              "description": "Each profile appears as a grouped HomeKit switch. Activating it starts the engine with those exact climate settings and the switch turns off automatically after the configured duration.",
               "type": "array",
               "items": {
                 "type": "object",
