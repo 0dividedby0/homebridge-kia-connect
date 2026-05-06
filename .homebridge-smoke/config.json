@@ -1,0 +1,15 @@
+{
+  "bridge": {
+    "name": "Homebridge Smoke",
+    "username": "0E:52:6F:AA:BB:CC",
+    "port": 51826,
+    "pin": "031-45-154"
+  },
+  "accessories": [],
+  "platforms": [
+    {
+      "platform": "KiaConnect",
+      "name": "Kia Connect"
+    }
+  ]
+}

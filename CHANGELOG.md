@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.4] - 2026-05-05
+
+### Changed
+- **Homebridge 2 compatibility metadata** — explicitly marked the plugin as supporting Homebridge `^1.6.0 || ^2.0.0` so Homebridge UI can recognize it as v2-ready.
+- **Runtime support matrix** — updated the declared Node.js support range to current Homebridge-supported releases.
+- **Development dependency alignment** — updated the local Homebridge dev dependency to the current stable line used for regular testing.
+
+### Added
+- **Homebridge 2 beta smoke test** — added CI coverage that installs `homebridge@beta`, builds the plugin, and verifies the platform loads successfully.
+- **Local smoke config** — added a minimal `.homebridge-smoke` config and `smoke:homebridge` script for quick local load checks without real Kia credentials.
+
 ## [1.1.3] - 2026-04-18
 
 ### Added

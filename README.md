@@ -18,8 +18,8 @@ Homebridge plugin for Kia Connect (US API). Works with any vehicle on a US Kia C
 
 ## Requirements
 
-- Homebridge `>=1.3.5`
-- Node.js `>=16`
+- Homebridge `^1.6.0 || ^2.0.0`
+- Node.js `^18.20.4 || ^20.15.1 || ^22.12.0 || ^24.0.0`
 - US Kia Connect account
 - VIN for each vehicle to control (17 characters)
 
@@ -141,6 +141,7 @@ npm run build        # compile TypeScript → dist/
 npm run lint         # ESLint
 npm run watch        # build + npm link + nodemon (live reload)
 npm run dev:smoke    # build + run local Homebridge against this repo
+npm run smoke:homebridge  # load the plugin with a minimal local smoke config
 ```
 
 ## Deploying Changes
