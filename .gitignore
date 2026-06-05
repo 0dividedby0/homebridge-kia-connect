@@ -27,6 +27,10 @@ coverage/
 
 # Local Homebridge dev runtime
 .homebridge-dev/
+.homebridge-smoke/persist/
+
+# Local Codex/session artifacts
+.codex
 
 # npm pack output
 *.tgz
