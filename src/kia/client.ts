@@ -50,10 +50,10 @@ export class KiaClient {
   // ─── Public: vehicle status ───────────────────────────────────────────────
 
   async getStatus(): Promise<VehicleStatus> {
-    const raw = await this.withSession((token, vehicleKey) =>
-      this.fetchGvi(token, vehicleKey),
-    );
-    return this.parseStatus(raw);
+    return this.withSession(async (token, vehicleKey) => {
+      const raw = await this.fetchGvi(token, vehicleKey);
+      return this.parseStatus(raw, vehicleKey);
+    });
   }
 
   // ─── Public: remote commands ──────────────────────────────────────────────
@@ -117,6 +117,7 @@ export class KiaClient {
   // ─── Private: vehicle key resolution ──────────────────────────────────────
 
   private async resolveVehicleKey(token: StoredToken): Promise<string> {
+    const configuredVin = normalizeVin(this.vin);
     if (
       this.cachedVehicleKeyForToken === token.accessToken &&
       this.cachedVehicleKey !== null
@@ -127,20 +128,38 @@ export class KiaClient {
     this.log.debug('[Kia] Resolving vehicle key for VIN', this.vin);
     const vehicles = await this.fetchVehicleList(token);
 
-    for (const v of vehicles) {
-      let gvi: GviResponse;
-      try {
-        gvi = await this.fetchGvi(token, v.key);
-      } catch {
-        continue;
-      }
-      const vehicleVin =
-        gvi.payload?.vehicleInfoList?.[0]?.vehicleConfig?.vehicleDetail?.vehicle?.vin;
-      if (vehicleVin === this.vin) {
-        this.cachedVehicleKey = v.key;
-        this.cachedVehicleKeyForToken = token.accessToken;
-        this.log.debug('[Kia] Vehicle key resolved:', v.key);
-        return v.key;
+    const directMatches = vehicles.filter((v) =>
+      v.vinCandidates.some((candidate) => normalizeVin(candidate) === configuredVin),
+    );
+    const vehiclesToProbe = [
+      ...directMatches,
+      ...vehicles.filter((v) => !directMatches.includes(v)),
+    ];
+
+    for (const v of vehiclesToProbe) {
+      for (const keyCandidate of v.keyCandidates) {
+        let gvi: GviResponse;
+        try {
+          gvi = await this.fetchGvi(token, keyCandidate);
+        } catch (err) {
+          this.log.debug(
+            `[Kia] Skipping vehicle key ${keyCandidate} during VIN lookup: ${formatError(err)}`,
+          );
+          continue;
+        }
+        const vehicleInfoForKey = this.findVehicleInfo(gvi, keyCandidate);
+        const vehicleVin = getVehicleInfoVin(vehicleInfoForKey);
+        if (normalizeVin(vehicleVin) === configuredVin) {
+          this.cachedVehicleKey = vehicleInfoForKey?.vinKey ?? keyCandidate;
+          this.cachedVehicleKeyForToken = token.accessToken;
+          this.log.debug(
+            directMatches.includes(v)
+              ? '[Kia] Vehicle key resolved from validated garage-list match:'
+              : '[Kia] Vehicle key resolved:',
+            this.cachedVehicleKey,
+          );
+          return this.cachedVehicleKey;
+        }
       }
     }
 
@@ -227,12 +246,30 @@ export class KiaClient {
       headers: this.sessionHeaders(token),
     });
     this.assertOk(res);
-    return (res.data.payload.vehicleSummary ?? []).map((s) => ({
-      key: s.vehicleKey,
-      identifier: s.vehicleIdentifier,
-      name: s.nickName,
-      model: s.modelName,
-    }));
+    return (res.data.payload.vehicleSummary ?? []).map((s) => {
+      const keyCandidates = uniqueStrings([
+        s.vehicleKey,
+        ...collectUuidStrings(s),
+      ]);
+      const vinCandidates = uniqueStrings([
+        s.vehicleIdentifier,
+        s.vin,
+        s.vinNumber,
+        s.vinNo,
+        s.vehicle?.vin,
+        s.vehicleDetail?.vehicle?.vin,
+        ...collectVinStrings(s),
+      ]);
+
+      return {
+        key: s.vehicleKey,
+        keyCandidates,
+        identifier: s.vehicleIdentifier,
+        vinCandidates,
+        name: s.nickName,
+        model: s.modelName,
+      };
+    });
   }
 
   private async fetchGvi(token: StoredToken, vehicleKey: string): Promise<GviResponse> {
@@ -436,9 +473,14 @@ export class KiaClient {
 
   // ─── Private: status parsing ───────────────────────────────────────────────
 
-  private parseStatus(raw: GviResponse): VehicleStatus {
+  private parseStatus(raw: GviResponse, vehicleKey: string): VehicleStatus {
+    const vehicleInfo = this.findVehicleInfo(raw, vehicleKey);
+    if (!vehicleInfo) {
+      throw new Error(`[Kia] No vehicle status returned for VIN ${this.vin}.`);
+    }
+
     const vs =
-      raw.payload.vehicleInfoList[0].lastVehicleInfo.vehicleStatusRpt.vehicleStatus;
+      vehicleInfo.lastVehicleInfo.vehicleStatusRpt.vehicleStatus;
 
     const syncUtc = vs.syncDate?.utc ?? '';
     const lastUpdatedAt = syncUtc
@@ -466,6 +508,20 @@ export class KiaClient {
     };
   }
 
+  private findVehicleInfo(
+    raw: GviResponse,
+    vehicleKey: string,
+  ): GviResponse['payload']['vehicleInfoList'][number] | undefined {
+    const vehicleInfoList = raw.payload?.vehicleInfoList ?? [];
+    const configuredVin = normalizeVin(this.vin);
+
+    return vehicleInfoList.find((info) =>
+      info.vinKey === vehicleKey && normalizeVin(getVehicleInfoVin(info)) === configuredVin,
+    ) ?? vehicleInfoList.find((info) =>
+      normalizeVin(getVehicleInfoVin(info)) === configuredVin,
+    ) ?? vehicleInfoList.find((info) => info.vinKey === vehicleKey);
+  }
+
   /** UUID v5 (SHA-1, DNS namespace) to match Kia app header format. */
   private uuidV5(namespace: string, name: string): string {
     const nsBytes = Buffer.from('6ba7b8109dad11d180b400c04fd430c8', 'hex');
@@ -490,6 +546,64 @@ export class KiaClient {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizeVin(vin: string | undefined): string {
+  return (vin ?? '').trim().toUpperCase();
+}
+
+function isString(value: string | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return Array.from(new Set(values.filter(isString)));
+}
+
+function collectUuidStrings(value: unknown): string[] {
+  return collectMatchingStrings(
+    value,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  );
+}
+
+function collectVinStrings(value: unknown): string[] {
+  return collectMatchingStrings(value, /^[A-HJ-NPR-Z0-9]{17}$/i);
+}
+
+function collectMatchingStrings(value: unknown, pattern: RegExp): string[] {
+  const matches: string[] = [];
+  const visit = (item: unknown): void => {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (pattern.test(trimmed)) {
+        matches.push(trimmed);
+      }
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+
+    if (item && typeof item === 'object') {
+      Object.values(item).forEach(visit);
+    }
+  };
+
+  visit(value);
+  return uniqueStrings(matches);
+}
+
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function getVehicleInfoVin(
+  vehicleInfo: GviResponse['payload']['vehicleInfoList'][number] | undefined,
+): string | undefined {
+  return vehicleInfo?.vehicleConfig?.vehicleDetail?.vehicle?.vin;
+}
 
 function seatSetting(level: SeatLevel): Record<string, number> {
   switch (level) {

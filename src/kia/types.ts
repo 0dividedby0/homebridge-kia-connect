@@ -28,8 +28,12 @@ export interface OTPRequest {
 export interface ApiVehicle {
   /** Session-specific vehicle key (vehicleKey) — changes per session */
   key: string;
+  /** Additional UUID-like vehicle keys exposed by the garage list response */
+  keyCandidates: string[];
   /** Stable vehicle identifier */
   identifier: string;
+  /** VIN candidates exposed by the garage list response */
+  vinCandidates: string[];
   name: string;
   model: string;
 }
@@ -96,6 +100,17 @@ export interface GvlVehicleSummary {
   vehicleKey: string;
   nickName: string;
   modelName: string;
+  vin?: string;
+  vinNumber?: string;
+  vinNo?: string;
+  vehicle?: {
+    vin?: string;
+  };
+  vehicleDetail?: {
+    vehicle?: {
+      vin?: string;
+    };
+  };
 }
 
 export interface GviResponse {

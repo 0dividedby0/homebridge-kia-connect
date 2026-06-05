@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5] - 2026-06-05
+
+### Fixed
+- **Invalid OTP submissions crashing authentication** — the local OTP page now verifies the code with Kia before completing the browser flow. Rejected 6-digit codes keep the page open with an error so another code can be entered.
+- **Multi-vehicle VIN resolution failures** — vehicle lookup now probes all UUID-like vehicle key candidates returned by Kia's garage-list response, which fixes cases where the primary `vehicleKey` is rejected with `1005 Invalid vehicle for current session`.
+- **Wrong vehicle status selection risk** — status parsing now selects the returned vehicle info by VIN/vehicle key instead of assuming the first `vehicleInfoList` entry belongs to the configured vehicle.
+
 ## [1.1.4] - 2026-05-05
 
 ### Changed

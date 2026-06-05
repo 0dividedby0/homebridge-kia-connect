@@ -271,10 +271,8 @@ export class AuthManager {
     this.log.info(`[Kia Auth] Sending OTP to ${destination} via ${notifyType}…`);
     await this.sendOtp(otpRequest, notifyType);
 
-    const code = await this.collectOtpCode();
-
     this.log.info('[Kia Auth] Verifying OTP…');
-    const { sid, rmtoken } = await this.verifyOtp(otpRequest, code);
+    const { sid, rmtoken } = await this.collectVerifiedOtp(otpRequest);
 
     this.log.info('[Kia Auth] Completing login…');
     const finalSid = await this.finalLogin(sid, rmtoken);
@@ -289,7 +287,7 @@ export class AuthManager {
   }
 
   /**
-   * Starts a small HTTP server and waits for the user to submit their OTP code.
+   * Starts a small HTTP server and waits for the user to submit a valid OTP code.
    *
    * The user can:
    *   • Open  http://<host>:<PORT>/kia-otp  in a browser and type the code.
@@ -297,8 +295,10 @@ export class AuthManager {
    *
    * Times out after 5 minutes.
    */
-  private collectOtpCode(): Promise<string> {
+  private collectVerifiedOtp(otpRequest: OTPRequest): Promise<{ sid: string; rmtoken: string }> {
     return new Promise((resolve, reject) => {
+      let completed = false;
+      let verifying = false;
       const timeout = setTimeout(() => {
         this.stopOtpServer();
         reject(new Error('[Kia Auth] OTP entry timed out after 5 minutes.'));
@@ -312,7 +312,7 @@ export class AuthManager {
         `[Kia Auth] Or in a terminal: curl "http://localhost:${this.otpPort}/kia-otp?code=YOUR_CODE"`,
       );
 
-      this.otpServer = http.createServer((req, res) => {
+      this.otpServer = http.createServer(async (req, res) => {
         const rawUrl = req.url ?? '/';
         let parsed: URL;
         try {
@@ -330,37 +330,46 @@ export class AuthManager {
         const code = parsed.searchParams.get('code') ?? '';
         const isValid = /^\d{6}$/.test(code);
 
-        const html = (content: string): string =>
-          '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-          '<title>Kia OTP</title>' +
-          '<style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:0 20px}</style>' +
-          `</head><body>${content}</body></html>`;
-
         if (!isValid) {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
-            html(`
-              <h2>🔑 Enter your Kia OTP code</h2>
-              <p>A 6-digit code was sent to your registered email or phone.</p>
-              <form method="get" action="/kia-otp">
-                <input name="code" placeholder="123456" maxlength="6"
-                       inputmode="numeric" autocomplete="one-time-code" autofocus
-                       style="font-size:2rem;width:160px;letter-spacing:0.3rem;text-align:center" />
-                <br><br>
-                <button type="submit" style="font-size:1.2rem;padding:8px 24px">Submit</button>
-              </form>
-              ${code ? '<p style="color:red">Code must be exactly 6 digits.</p>' : ''}
-            `),
+            this.renderOtpForm(code ? 'Code must be exactly 6 digits.' : ''),
           );
           return;
         }
 
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
-          html('<h2>✅ OTP accepted!</h2><p>Authentication completing — you can close this tab.</p>'),
-        );
+        if (completed) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
+            this.renderOtpAccepted(),
+          );
+          return;
+        }
 
-        clearTimeout(timeout);
-        this.stopOtpServer();
-        resolve(code);
+        if (verifying) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
+            this.renderOtpPage('<h2>Checking OTP...</h2><p>Please wait a moment.</p>'),
+          );
+          return;
+        }
+
+        try {
+          verifying = true;
+          const credentials = await this.verifyOtp(otpRequest, code);
+          completed = true;
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
+            this.renderOtpAccepted(),
+          );
+
+          clearTimeout(timeout);
+          this.stopOtpServer();
+          resolve(credentials);
+        } catch (err) {
+          this.log.warn(`[Kia Auth] OTP verification failed: ${formatOtpError(err)}`);
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(
+            this.renderOtpForm('That OTP code was not accepted. Please check the code and try again.'),
+          );
+        } finally {
+          verifying = false;
+        }
       });
 
       this.otpServer.once('error', (err) => {
@@ -378,6 +387,34 @@ export class AuthManager {
         this.log.info(`[Kia Auth] OTP server listening on port ${this.otpPort}.`);
       });
     });
+  }
+
+  private renderOtpForm(errorMessage: string): string {
+    return this.renderOtpPage(`
+      <h2>Enter your Kia OTP code</h2>
+      <p>A 6-digit code was sent to your registered email or phone.</p>
+      <form method="get" action="/kia-otp">
+        <input name="code" placeholder="123456" maxlength="6"
+               inputmode="numeric" autocomplete="one-time-code" autofocus
+               style="font-size:2rem;width:160px;letter-spacing:0.3rem;text-align:center" />
+        <br><br>
+        <button type="submit" style="font-size:1.2rem;padding:8px 24px">Submit</button>
+      </form>
+      ${errorMessage ? `<p style="color:red">${errorMessage}</p>` : ''}
+    `);
+  }
+
+  private renderOtpAccepted(): string {
+    return this.renderOtpPage(
+      '<h2>OTP accepted!</h2><p>Authentication completing. You can close this tab.</p>',
+    );
+  }
+
+  private renderOtpPage(content: string): string {
+    return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<title>Kia OTP</title>' +
+      '<style>body{font-family:system-ui;max-width:400px;margin:80px auto;padding:0 20px}</style>' +
+      `</head><body>${content}</body></html>`;
   }
 
   private stopOtpServer(): void {
@@ -432,4 +469,16 @@ export class AuthManager {
       hash.slice(10, 16).toString('hex'),
     ].join('-');
   }
+}
+
+function formatOtpError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const status = err.response?.status;
+    const data = err.response?.data;
+    const message = data && typeof data === 'object'
+      ? JSON.stringify(data)
+      : data ?? err.message;
+    return status ? `HTTP ${status}: ${message}` : err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
 }

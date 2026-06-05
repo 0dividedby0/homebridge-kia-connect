@@ -13,8 +13,9 @@ Homebridge plugin for Kia Connect (US API). Works with any vehicle on a US Kia C
 - Fuel level as a HomeKit Battery service
 - Optional combined openings sensor that shows open when any door, the hood, or the trunk is open
 - Multi-vehicle support (all vehicles on the same Kia account)
+- VIN-aware vehicle lookup for accounts where Kia returns multiple session-specific vehicle keys
 - Session persistence via remember token — minimises OTP prompts
-- Local web page for OTP entry during first login
+- Local web page for OTP entry during first login, with retry support for rejected codes
 
 ## Requirements
 
@@ -125,13 +126,17 @@ The plugin starts a small local HTTP server on `otpPort` to accept the code:
 | Query string | `http://<homebridge-host>:38581/kia-otp?code=123456` |
 | curl | `curl "http://localhost:38581/kia-otp?code=123456"` |
 
+The page verifies the submitted code with Kia before completing login. If Kia rejects a valid-looking 6-digit code, the page stays open and lets you enter another code.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | Plugin does not start | Check that `email` and `password` are set in config |
 | VIN not found | Confirm the VIN is exactly 17 characters and is on the same Kia account |
+| `Invalid vehicle for current session` | Upgrade to `1.1.5` or newer; the plugin now probes alternate session vehicle keys returned by Kia |
 | OTP page unreachable | Check for port conflicts or firewall rules; change `otpPort` if needed |
+| OTP code rejected | Keep the OTP page open and enter the newest 6-digit code from Kia |
 | Vehicle polled too often | Raise `refreshIntervalSeconds` (minimum 300) |
 
 ## Development
