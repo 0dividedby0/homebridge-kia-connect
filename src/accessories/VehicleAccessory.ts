@@ -3,6 +3,9 @@ import { KiaConnectPlatform } from '../platform';
 import { KiaClient } from '../kia/client';
 import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
 
+/** EV state of charge (%) at or below which HomeKit shows low battery. */
+const EV_LOW_BATTERY_PERCENT = 20;
+
 /**
  * VehicleAccessory
  *
@@ -16,7 +19,9 @@ import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
  *                      that profile.  Turning it OFF stops the engine.
  *                      Switching to a different profile starts it fresh.
  *  • OccupancySensor — engine running indicator
- *  • Battery         — fuel level + low-fuel warning
+ *  • Battery         — EV battery or fuel level, low warning, charging state
+ *  • Separate "<name> Battery" accessory (EVs only) — the same Battery
+ *                      service on its own, so it gets its own Home tile.
  *  • ContactSensor   — combined door/hood/trunk status
  *                      (only when showDoorSensors = true)
  */
@@ -39,6 +44,7 @@ export class VehicleAccessory {
   private readonly profileServices: Map<string, Service> = new Map();
   private readonly batteryService: Service;
   private readonly openingService: Service | null;
+  private evBatteryService: Service | null = null;
 
   constructor(
     private readonly platform: KiaConnectPlatform,
@@ -261,26 +267,25 @@ export class VehicleAccessory {
     }
 
     // ── Battery / fuel ────────────────────────────────────────────────────
+    // Shows the EV battery when the vehicle reports one, otherwise fuel level.
+    // accessory.context.isEv remembers EV detection across restarts.
+    const batteryName = accessory.context.isEv ? 'Battery' : 'Fuel Level';
     this.batteryService =
       accessory.getServiceById(this.Service.Battery, `${config.vin}:battery`) ??
-      accessory.addService(this.Service.Battery, 'Fuel Level', `${config.vin}:battery`);
-    setServiceName(this.batteryService, Characteristic, 'Fuel Level');
+      accessory.addService(this.Service.Battery, batteryName, `${config.vin}:battery`);
+    setServiceName(this.batteryService, Characteristic, batteryName);
 
     this.batteryService
       .getCharacteristic(Characteristic.BatteryLevel)
-      .onGet(() => this.status?.fuelLevel ?? 0);
+      .onGet(() => this.getBatteryLevel());
 
     this.batteryService
       .getCharacteristic(Characteristic.StatusLowBattery)
-      .onGet(() =>
-        this.status?.isFuelLow
-          ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-          : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
-      );
+      .onGet(() => this.getLowBatteryState());
 
     this.batteryService
       .getCharacteristic(Characteristic.ChargingState)
-      .onGet(() => Characteristic.ChargingState.NOT_CHARGEABLE);
+      .onGet(() => this.getChargingState());
 
     // ── Opening sensor (optional) ────────────────────────────────────────
     if (config.showDoorSensors) {
@@ -312,6 +317,10 @@ export class VehicleAccessory {
     }
 
     this.removeLegacyDoorSensors();
+
+    if (accessory.context.isEv) {
+      this.setupEvBatteryAccessory();
+    }
 
     // ── Initial refresh + polling loop ────────────────────────────────────
     this.startPolling();
@@ -397,16 +406,37 @@ export class VehicleAccessory {
     }
 
     // Battery
+    if (this.status.ev && !this.accessory.context.isEv) {
+      this.accessory.context.isEv = true;
+      setServiceName(this.batteryService, Characteristic, 'Battery');
+      this.platform.api.updatePlatformAccessories([this.accessory]);
+      this.setupEvBatteryAccessory();
+    }
     this.batteryService.updateCharacteristic(
       Characteristic.BatteryLevel,
-      this.status.fuelLevel,
+      this.getBatteryLevel(),
     );
     this.batteryService.updateCharacteristic(
       Characteristic.StatusLowBattery,
-      this.status.isFuelLow
-        ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-        : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
+      this.getLowBatteryState(),
     );
+    this.batteryService.updateCharacteristic(
+      Characteristic.ChargingState,
+      this.getChargingState(),
+    );
+
+    // Separate EV battery accessory
+    if (this.evBatteryService) {
+      this.evBatteryService.updateCharacteristic(Characteristic.BatteryLevel, this.getBatteryLevel());
+      this.evBatteryService.updateCharacteristic(
+        Characteristic.StatusLowBattery,
+        this.getLowBatteryState(),
+      );
+      this.evBatteryService.updateCharacteristic(
+        Characteristic.ChargingState,
+        this.getChargingState(),
+      );
+    }
 
     // Opening sensor
     if (this.openingService) {
@@ -430,6 +460,62 @@ export class VehicleAccessory {
   }
 
   // ─── Characteristic getters ────────────────────────────────────────────────
+
+  /**
+   * Sets up the separate "<name> Battery" accessory. The Home app does not show
+   * a Battery service grouped with the vehicle's other services, so EVs get it
+   * as its own accessory. Its tile reads "Not Supported"; tapping it shows the
+   * level and charging state.
+   */
+  private setupEvBatteryAccessory(): void {
+    if (this.evBatteryService) return;
+    const { Characteristic } = this.platform.api.hap;
+    const name = `${this.config.name} Battery`;
+    const battery = this.platform.getOrCreateBatteryAccessory(this.config.name, this.config.vin);
+
+    battery
+      .getService(this.Service.AccessoryInformation)!
+      .setCharacteristic(Characteristic.Manufacturer, 'Kia')
+      .setCharacteristic(Characteristic.Model, 'Vehicle Battery')
+      .setCharacteristic(Characteristic.SerialNumber, `${this.config.vin}-battery`)
+      .setCharacteristic(Characteristic.Name, name);
+
+    const svc =
+      battery.getService(this.Service.Battery) ??
+      battery.addService(this.Service.Battery, name);
+    setServiceName(svc, Characteristic, name);
+    svc.getCharacteristic(Characteristic.BatteryLevel).onGet(() => this.getBatteryLevel());
+    svc.getCharacteristic(Characteristic.StatusLowBattery).onGet(() => this.getLowBatteryState());
+    svc.getCharacteristic(Characteristic.ChargingState).onGet(() => this.getChargingState());
+    this.evBatteryService = svc;
+  }
+
+  private getBatteryLevel(): CharacteristicValue {
+    const level = this.status?.ev?.batteryLevel ?? this.status?.fuelLevel ?? 0;
+    return Math.max(0, Math.min(100, Math.round(level)));
+  }
+
+  private getLowBatteryState(): CharacteristicValue {
+    const { Characteristic } = this.platform.api.hap;
+    const ev = this.status?.ev;
+    const isLow = ev ? ev.batteryLevel <= EV_LOW_BATTERY_PERCENT : this.status?.isFuelLow;
+    return isLow
+      ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+      : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL;
+  }
+
+  private getChargingState(): CharacteristicValue {
+    const { Characteristic } = this.platform.api.hap;
+    const ev = this.status?.ev;
+    if (!ev) {
+      return this.accessory.context.isEv
+        ? Characteristic.ChargingState.NOT_CHARGING
+        : Characteristic.ChargingState.NOT_CHARGEABLE;
+    }
+    return ev.isCharging
+      ? Characteristic.ChargingState.CHARGING
+      : Characteristic.ChargingState.NOT_CHARGING;
+  }
 
   private getLockCurrentState(): CharacteristicValue {
     const { Characteristic } = this.platform.api.hap;
