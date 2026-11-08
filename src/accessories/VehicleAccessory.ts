@@ -3,6 +3,9 @@ import { KiaConnectPlatform } from '../platform';
 import { KiaClient } from '../kia/client';
 import { ClimateProfile, VehicleConfig, VehicleStatus } from '../kia/types';
 
+/** EV state of charge (%) at or below which HomeKit shows low battery. */
+const EV_LOW_BATTERY_PERCENT = 20;
+
 /**
  * VehicleAccessory
  *
@@ -261,26 +264,25 @@ export class VehicleAccessory {
     }
 
     // ── Battery / fuel ────────────────────────────────────────────────────
+    // Shows the EV battery when the vehicle reports one, otherwise fuel level.
+    // accessory.context.isEv remembers EV detection across restarts.
+    const batteryName = accessory.context.isEv ? 'Battery' : 'Fuel Level';
     this.batteryService =
       accessory.getServiceById(this.Service.Battery, `${config.vin}:battery`) ??
-      accessory.addService(this.Service.Battery, 'Fuel Level', `${config.vin}:battery`);
-    setServiceName(this.batteryService, Characteristic, 'Fuel Level');
+      accessory.addService(this.Service.Battery, batteryName, `${config.vin}:battery`);
+    setServiceName(this.batteryService, Characteristic, batteryName);
 
     this.batteryService
       .getCharacteristic(Characteristic.BatteryLevel)
-      .onGet(() => this.status?.fuelLevel ?? 0);
+      .onGet(() => this.getBatteryLevel());
 
     this.batteryService
       .getCharacteristic(Characteristic.StatusLowBattery)
-      .onGet(() =>
-        this.status?.isFuelLow
-          ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-          : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
-      );
+      .onGet(() => this.getLowBatteryState());
 
     this.batteryService
       .getCharacteristic(Characteristic.ChargingState)
-      .onGet(() => Characteristic.ChargingState.NOT_CHARGEABLE);
+      .onGet(() => this.getChargingState());
 
     // ── Opening sensor (optional) ────────────────────────────────────────
     if (config.showDoorSensors) {
@@ -397,15 +399,22 @@ export class VehicleAccessory {
     }
 
     // Battery
+    if (this.status.ev && !this.accessory.context.isEv) {
+      this.accessory.context.isEv = true;
+      setServiceName(this.batteryService, Characteristic, 'Battery');
+      this.platform.api.updatePlatformAccessories([this.accessory]);
+    }
     this.batteryService.updateCharacteristic(
       Characteristic.BatteryLevel,
-      this.status.fuelLevel,
+      this.getBatteryLevel(),
     );
     this.batteryService.updateCharacteristic(
       Characteristic.StatusLowBattery,
-      this.status.isFuelLow
-        ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
-        : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
+      this.getLowBatteryState(),
+    );
+    this.batteryService.updateCharacteristic(
+      Characteristic.ChargingState,
+      this.getChargingState(),
     );
 
     // Opening sensor
@@ -430,6 +439,33 @@ export class VehicleAccessory {
   }
 
   // ─── Characteristic getters ────────────────────────────────────────────────
+
+  private getBatteryLevel(): CharacteristicValue {
+    const level = this.status?.ev?.batteryLevel ?? this.status?.fuelLevel ?? 0;
+    return Math.max(0, Math.min(100, Math.round(level)));
+  }
+
+  private getLowBatteryState(): CharacteristicValue {
+    const { Characteristic } = this.platform.api.hap;
+    const ev = this.status?.ev;
+    const isLow = ev ? ev.batteryLevel <= EV_LOW_BATTERY_PERCENT : this.status?.isFuelLow;
+    return isLow
+      ? Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+      : Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL;
+  }
+
+  private getChargingState(): CharacteristicValue {
+    const { Characteristic } = this.platform.api.hap;
+    const ev = this.status?.ev;
+    if (!ev) {
+      return this.accessory.context.isEv
+        ? Characteristic.ChargingState.NOT_CHARGING
+        : Characteristic.ChargingState.NOT_CHARGEABLE;
+    }
+    return ev.isCharging
+      ? Characteristic.ChargingState.CHARGING
+      : Characteristic.ChargingState.NOT_CHARGING;
+  }
 
   private getLockCurrentState(): CharacteristicValue {
     const { Characteristic } = this.platform.api.hap;

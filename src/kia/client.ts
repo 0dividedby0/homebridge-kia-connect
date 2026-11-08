@@ -496,6 +496,13 @@ export class KiaClient {
       fuelLevel: vs.fuelLevel ?? 0,
       isFuelLow: vs.lowFuelLight ?? false,
       isAirOn: vs.climate?.airCtrl ?? false,
+      ev: typeof vs.evStatus?.batteryStatus === 'number'
+        ? {
+          batteryLevel: vs.evStatus.batteryStatus,
+          isCharging: vs.evStatus.batteryCharge ?? false,
+          isPluggedIn: (vs.evStatus.batteryPlugin ?? 0) !== 0,
+        }
+        : undefined,
       doors: {
         frontLeft: vs.doorStatus.frontLeft !== 0,
         frontRight: vs.doorStatus.frontRight !== 0,

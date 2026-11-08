@@ -44,6 +44,13 @@ export interface VehicleStatus {
   fuelLevel: number;
   isFuelLow: boolean;
   isAirOn: boolean;
+  /** Present only for EV/PHEV vehicles that report `evStatus`. */
+  ev?: {
+    /** High-voltage battery state of charge, 0–100. */
+    batteryLevel: number;
+    isCharging: boolean;
+    isPluggedIn: boolean;
+  };
   doors: {
     frontLeft: boolean;
     frontRight: boolean;
@@ -132,6 +139,13 @@ export interface GviResponse {
             doorLock: boolean;
             fuelLevel: number;
             lowFuelLight: boolean;
+            evStatus?: {
+              /** State of charge, 0–100. */
+              batteryStatus?: number;
+              batteryCharge?: boolean;
+              /** 0 = unplugged; non-zero = plugged in. */
+              batteryPlugin?: number;
+            };
             climate: {
               airCtrl: boolean;
             };
