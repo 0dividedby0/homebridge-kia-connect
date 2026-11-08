@@ -102,6 +102,7 @@ Add the platform to your Homebridge config, or use the UI form generated from th
 - The main vehicle accessory stays grouped around the lock so it keeps the secure, car-like presentation in Home.
 - Each climate profile is exposed as a switch named `<vehicle name> <profile name>`. This makes Siri phrase matching more reliable than a bare child switch name like `Heat`.
 - A separate occupancy sensor named `<vehicle name> Engine Running` indicates whether the engine is currently on.
+- For EVs, the battery level and charging state also appear as a separate `<vehicle name> Battery` accessory. The Home app shows its tile as "Not Supported"; tap it to see the level and whether it is charging.
 - If `showDoorSensors` is enabled, HomeKit shows one contact sensor named `<vehicle name> Openings` that goes open when any door, the hood, or the trunk is open.
 
 ### Siri Tips

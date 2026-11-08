@@ -17,6 +17,8 @@ export class KiaConnectPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
   public readonly cachedAccessories: PlatformAccessory[] = [];
+  /** UUIDs of battery accessories in use; kept out of stale-accessory removal. */
+  private readonly batteryAccessoryUuids = new Set<string>();
 
   constructor(
     public readonly log: Logger,
@@ -88,10 +90,30 @@ export class KiaConnectPlatform implements DynamicPlatformPlugin {
 
     // Remove accessories for VINs no longer in config.
     const configuredUuids = new Set(vehicles.map((v) => this.api.hap.uuid.generate(v.vin)));
-    const stale = this.cachedAccessories.filter((a) => !configuredUuids.has(a.UUID));
+    const stale = this.cachedAccessories.filter(
+      (a) => !configuredUuids.has(a.UUID) && !this.batteryAccessoryUuids.has(a.UUID),
+    );
     if (stale.length > 0) {
       this.log.info(`[Kia] Removing ${stale.length} stale accessory/accessories.`);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
     }
+  }
+
+  /**
+   * Returns the separate "<name> Battery" accessory for an EV, restoring it
+   * from cache or registering it on first use.
+   */
+  getOrCreateBatteryAccessory(name: string, vin: string): PlatformAccessory {
+    const uuid = this.api.hap.uuid.generate(`${vin}:battery-tile`);
+    this.batteryAccessoryUuids.add(uuid);
+    const existing = this.cachedAccessories.find((a) => a.UUID === uuid);
+    if (existing) return existing;
+
+    this.log.info(`[Kia] Registering battery accessory for ${name}`);
+    const accessory = new this.api.platformAccessory(`${name} Battery`, uuid);
+    accessory.context.vin = vin;
+    this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    this.cachedAccessories.push(accessory);
+    return accessory;
   }
 }

@@ -19,7 +19,9 @@ const EV_LOW_BATTERY_PERCENT = 20;
  *                      that profile.  Turning it OFF stops the engine.
  *                      Switching to a different profile starts it fresh.
  *  • OccupancySensor — engine running indicator
- *  • Battery         — fuel level + low-fuel warning
+ *  • Battery         — EV battery or fuel level, low warning, charging state
+ *  • Separate "<name> Battery" accessory (EVs only) — the same Battery
+ *                      service on its own, so it gets its own Home tile.
  *  • ContactSensor   — combined door/hood/trunk status
  *                      (only when showDoorSensors = true)
  */
@@ -42,6 +44,7 @@ export class VehicleAccessory {
   private readonly profileServices: Map<string, Service> = new Map();
   private readonly batteryService: Service;
   private readonly openingService: Service | null;
+  private evBatteryService: Service | null = null;
 
   constructor(
     private readonly platform: KiaConnectPlatform,
@@ -315,6 +318,10 @@ export class VehicleAccessory {
 
     this.removeLegacyDoorSensors();
 
+    if (accessory.context.isEv) {
+      this.setupEvBatteryAccessory();
+    }
+
     // ── Initial refresh + polling loop ────────────────────────────────────
     this.startPolling();
   }
@@ -403,6 +410,7 @@ export class VehicleAccessory {
       this.accessory.context.isEv = true;
       setServiceName(this.batteryService, Characteristic, 'Battery');
       this.platform.api.updatePlatformAccessories([this.accessory]);
+      this.setupEvBatteryAccessory();
     }
     this.batteryService.updateCharacteristic(
       Characteristic.BatteryLevel,
@@ -416,6 +424,19 @@ export class VehicleAccessory {
       Characteristic.ChargingState,
       this.getChargingState(),
     );
+
+    // Separate EV battery accessory
+    if (this.evBatteryService) {
+      this.evBatteryService.updateCharacteristic(Characteristic.BatteryLevel, this.getBatteryLevel());
+      this.evBatteryService.updateCharacteristic(
+        Characteristic.StatusLowBattery,
+        this.getLowBatteryState(),
+      );
+      this.evBatteryService.updateCharacteristic(
+        Characteristic.ChargingState,
+        this.getChargingState(),
+      );
+    }
 
     // Opening sensor
     if (this.openingService) {
@@ -439,6 +460,35 @@ export class VehicleAccessory {
   }
 
   // ─── Characteristic getters ────────────────────────────────────────────────
+
+  /**
+   * Sets up the separate "<name> Battery" accessory. The Home app does not show
+   * a Battery service grouped with the vehicle's other services, so EVs get it
+   * as its own accessory. Its tile reads "Not Supported"; tapping it shows the
+   * level and charging state.
+   */
+  private setupEvBatteryAccessory(): void {
+    if (this.evBatteryService) return;
+    const { Characteristic } = this.platform.api.hap;
+    const name = `${this.config.name} Battery`;
+    const battery = this.platform.getOrCreateBatteryAccessory(this.config.name, this.config.vin);
+
+    battery
+      .getService(this.Service.AccessoryInformation)!
+      .setCharacteristic(Characteristic.Manufacturer, 'Kia')
+      .setCharacteristic(Characteristic.Model, 'Vehicle Battery')
+      .setCharacteristic(Characteristic.SerialNumber, `${this.config.vin}-battery`)
+      .setCharacteristic(Characteristic.Name, name);
+
+    const svc =
+      battery.getService(this.Service.Battery) ??
+      battery.addService(this.Service.Battery, name);
+    setServiceName(svc, Characteristic, name);
+    svc.getCharacteristic(Characteristic.BatteryLevel).onGet(() => this.getBatteryLevel());
+    svc.getCharacteristic(Characteristic.StatusLowBattery).onGet(() => this.getLowBatteryState());
+    svc.getCharacteristic(Characteristic.ChargingState).onGet(() => this.getChargingState());
+    this.evBatteryService = svc;
+  }
 
   private getBatteryLevel(): CharacteristicValue {
     const level = this.status?.ev?.batteryLevel ?? this.status?.fuelLevel ?? 0;
